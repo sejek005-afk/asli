@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+config.yaml
+data/
+state/
+reports/
+logs/
+*.log
+.DS_Store
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
