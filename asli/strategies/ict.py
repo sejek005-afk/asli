@@ -37,7 +37,7 @@ class ICTModel2022(Strategy):
         used = set()
         # state per direction: [armed_until, raid_idx, raid_ext, raid_level, level_name, mss_ref]
         st = {+1: None, -1: None}
-        for i in range(30, n - 1):
+        for i in range(30, n):
             if not np.isfinite(a[i]) or a[i] <= 0:
                 continue
             # ---- detect raids (sell-side raid arms a LONG, buy-side raid arms a SHORT)

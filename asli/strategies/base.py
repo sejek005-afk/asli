@@ -60,7 +60,9 @@ class Context:
 
     def m5_bar_at_close(self, close_time: pd.Timestamp) -> int:
         """Index of the last M5 bar that opens before `close_time` (i.e. the bar whose close completes a
-        higher-timeframe candle)."""
+        higher-timeframe candle). Returns -1 if that candle is not complete yet (live: still forming)."""
+        if close_time > self.index[-1] + pd.Timedelta(minutes=5):
+            return -1
         return int(self.index.searchsorted(close_time, side="left")) - 1
 
 

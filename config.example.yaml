@@ -1,0 +1,27 @@
+# Copy to config.yaml and fill in. config.yaml is never committed to GitHub.
+# Every key not written here uses the default from asli/config.py.
+
+mode: demo            # demo = only trades a DEMO account | real = allowed on a real account (also needs allow_real)
+allow_real: false     # second safety switch for real money
+
+symbols: [EURUSD, GBPUSD]   # exact names as shown in your MT5 Market Watch (e.g. EURUSD.ecn)
+
+mt5:
+  path: ""            # path to terminal64.exe of the MT5 used by the bot; empty = default install
+  login: 0            # demo account number
+  password: ""        # better: leave empty and set environment variable ASLI_MT5_PASSWORD
+  server: ""          # e.g. LiteFinance-MT5-Demo
+  server_time: auto   # auto | ny_plus_7 | fixed:2
+
+costs:                # used by the backtest
+  commission_pips: 0.7
+  slippage_pips: 0.2
+
+risk:
+  risk_per_trade_pct: 0.5
+  max_daily_loss_pct: 2.0
+  max_open_positions: 2
+
+server:
+  port: 8787
+  token: "PUT-A-LONG-RANDOM-STRING-HERE"   # the Android app needs the same token

@@ -40,7 +40,7 @@ class OpeningRangeBreakout(Strategy):
                 med = float(np.median(widths[-20:])) if len(widths) >= 5 else np.inf
                 widths.append(width)
                 if width <= max_pct * med:
-                    for b in range(i, j - 1):
+                    for b in range(i, j):
                         t = mins[b]
                         if t < open_min + rmin or t >= open_min + until:
                             continue

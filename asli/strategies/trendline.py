@@ -69,7 +69,7 @@ class TrendlineLiquidity(Strategy):
                 if not swept:
                     continue
                 bar = ctx.m5_bar_at_close(m.index[i] + _M15)
-                if bar < 0 or bar >= len(ctx.df) - 1:
+                if bar < 0 or bar >= len(ctx.df):
                     continue
                 if ctx.daily.trend[bar] == -dirn:
                     continue

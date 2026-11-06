@@ -46,7 +46,7 @@ class CandleRangeTheory(Strategy):
                 continue
             dirn = -1 if bear else +1
             bar = ctx.m5_bar_at_close(h4.index[k] + _H4)
-            if bar < 1 or bar >= len(ctx.df) - 1:
+            if bar < 1 or bar >= len(ctx.df):
                 continue
             key_hit = False
             # key level: the sweep candle took a daily/Asian level and closed back on the right side of it

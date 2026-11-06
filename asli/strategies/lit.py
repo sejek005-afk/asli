@@ -109,7 +109,7 @@ class LITInducement(Strategy):
     def _emit(self, ctx, m, i, s, a_i, valid, min_rr):
         dirn = s["dir"]
         bar = ctx.m5_bar_at_close(m.index[i] + _M15)
-        if bar < 0 or bar >= len(ctx.df) - 1:
+        if bar < 0 or bar >= len(ctx.df):
             return []
         sp = ctx.spread[bar]
         if dirn == +1:
