@@ -51,15 +51,13 @@ class LITInducement(Strategy):
                 seg = slice(max(start - 3, 0), i + 1)
                 ext_idx = int(np.argmin(l[seg]) if dirn == +1 else np.argmax(h[seg])) + seg.start
                 ob = None
-                for j in range(ext_idx + 1, max(ext_idx - 6, 0), -1):
-                    if j >= n:
-                        continue
+                for j in range(min(ext_idx + 1, i), max(ext_idx - 6, 0), -1):
                     if (dirn == +1 and c[j] < o[j]) or (dirn == -1 and c[j] > o[j]):
                         ob = j
                         break
                 if ob is None:
                     continue
-                has_fvg = any(np.isfinite(bl[x] if dirn == +1 else sl_lo[x]) for x in range(ob + 1, min(ob + 5, n)))
+                has_fvg = any(np.isfinite(bl[x] if dirn == +1 else sl_lo[x]) for x in range(ob + 1, min(ob + 5, i + 1)))
                 if not has_fvg:
                     continue
                 setup = {"dir": dirn, "bos": i, "ob_lo": l[ob], "ob_hi": h[ob], "phase": "wait_pb",

@@ -63,17 +63,18 @@ def simulate(sig: Signal, ctx: Context) -> Trade | None:
     else:
         fill_bar = -1
         for b in range(start, min(start + sig.valid_bars, n)):
-            # cancel if the stop is traded before the fill
-            if d == 1 and l[b] <= sig.sl:
-                return None
-            if d == -1 and h[b] + sp[b] >= sig.sl:
-                return None
+            # fill first: a bar that trades through entry AND stop fills, then stops out (-1R) below
             if d == 1 and l[b] + sp[b] <= sig.entry:
                 fill_bar, fill = b, min(sig.entry, o[b] + sp[b])
                 break
             if d == -1 and h[b] >= sig.entry:
                 fill_bar, fill = b, max(sig.entry, o[b])
                 break
+            # stop traded without ever reaching the entry (only possible with gaps): order is cancelled
+            if d == 1 and l[b] <= sig.sl:
+                return None
+            if d == -1 and h[b] + sp[b] >= sig.sl:
+                return None
         if fill_bar < 0:
             return None
     risk = abs(fill - sig.sl)

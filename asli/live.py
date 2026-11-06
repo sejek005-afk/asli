@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from .broker import lot_size
+from .broker import lot_size, round_volume
 from .data import mt5_recent, mt5_symbol_meta
 from .devil import DevilsAdvocate
 from .fundamental import Fundamentals
@@ -28,6 +28,19 @@ from .timeutil import NY, trading_day
 log = logging.getLogger("asli.live")
 UTC = timezone.utc
 BARS = 3000  # ~10 trading days of M5
+
+
+def utc_to_server(t: datetime, mode: str) -> datetime:
+    """Inverse of timeutil.server_naive_to_utc: express a UTC instant on the broker's server clock.
+    Returned as a tz-aware 'UTC' datetime whose wall clock equals the server clock, because MT5's Python API
+    interprets epoch seconds as server time."""
+    t = t.astimezone(UTC)
+    if mode == "utc":
+        return t
+    if mode.startswith("fixed:"):
+        return t + timedelta(hours=float(mode.split(":", 1)[1]))
+    ny_wall = t.astimezone(NY).replace(tzinfo=None)  # ny_plus_7: server = New York wall clock + 7h
+    return (ny_wall + timedelta(hours=7)).replace(tzinfo=UTC)
 
 
 class Engine:
@@ -54,7 +67,9 @@ class Engine:
         self.loss_streak = 0
         self.day_start_balance = None
         self.day_key = None
-        self._deals_since = datetime.now(UTC) - timedelta(days=1)
+        # look back to the oldest trade we still track (covers restarts after long downtime)
+        opened = [datetime.fromisoformat(m["opened"]) for m in self.trade_meta.values() if m.get("opened")]
+        self._deals_since = min(opened + [datetime.now(UTC)]) - timedelta(days=1)
 
     # ------------------------------------------------------------------ persistence
     def _load(self, name, default):
@@ -84,11 +99,20 @@ class Engine:
         return df, daily
 
     # ------------------------------------------------------------------ account guards
+    def _roll_day(self, acc: dict) -> None:
+        """Daily-loss baseline: balance at the forex day roll (17:00 New York), persisted across restarts."""
+        today = str(trading_day(pd.DatetimeIndex([pd.Timestamp.now(tz=UTC)]))[0])
+        if self.day_key != today:
+            saved = self._load("day.json", {})
+            if saved.get("day") == today:
+                self.day_key, self.day_start_balance = today, float(saved["balance"])
+            else:
+                self.day_key, self.day_start_balance = today, acc["balance"]
+                self._save("day.json", {"day": today, "balance": acc["balance"]})
+
     def account_state(self, symbol: str) -> dict:
         acc = self.broker.account()
-        today = datetime.now(NY).date()
-        if self.day_key != today:
-            self.day_key, self.day_start_balance = today, acc["balance"]
+        self._roll_day(acc)
         start = self.day_start_balance or acc["balance"]
         loss_pct = max(0.0, (start - acc["equity"]) / start * 100) if start else 0.0
         pos = self.broker.positions()
@@ -167,7 +191,20 @@ class Engine:
             risk_pct = float(self.cfg["risk"]["risk_per_trade_pct"])
             if self.loss_streak >= int(self.cfg["risk"]["halve_after_losses"]):
                 risk_pct /= 2
-            vol = lot_size(acc["balance"], risk_pct, abs(row["entry"] - row["sl"]), meta.tick_size,
+            if self.mt5 is not None:
+                try:  # fresh tick value (it moves for pairs whose quote currency isn't the account currency)
+                    meta = mt5_symbol_meta(self.mt5, sym)
+                    self.metas[sym] = meta
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("symbol_info refresh failed: %s", exc)
+            sl_dist = abs(row["entry"] - row["sl"])
+            if sig.order == "market":
+                try:
+                    tk = self.broker.tick(sym)
+                    sl_dist = abs((tk.ask if sig.direction == 1 else tk.bid) - sig.sl)
+                except Exception:  # noqa: BLE001
+                    pass
+            vol = lot_size(acc["balance"], risk_pct, sl_dist, meta.tick_size,
                            meta.tick_value, meta.volume_step, meta.volume_min, meta.volume_max)
             if vol <= 0:
                 decision["approved"] = False
@@ -176,7 +213,8 @@ class Engine:
                 comment = f"asli {row['strategy']}"
                 try:
                     if sig.order == "limit":
-                        exp = now + timedelta(minutes=5 * sig.valid_bars)
+                        # MT5 reads the expiration in broker SERVER time, not UTC
+                        exp = utc_to_server(now + timedelta(minutes=5 * sig.valid_bars), self.time_mode)
                         t = self.broker.limit(sym, sig.direction, vol, round(sig.entry, meta.digits),
                                               round(sig.sl, meta.digits), round(sig.tp, meta.digits), exp, comment)
                     else:
@@ -186,7 +224,9 @@ class Engine:
                     self.trade_meta[str(t)] = {**{k: v for k, v in row.items() if k not in ("time",)},
                                                "opened": now.isoformat(), "volume": vol,
                                                "risk_money": acc["balance"] * risk_pct / 100,
-                                               "tp1": sig.tp1, "tp1_done": False}
+                                               "tp1": sig.tp1, "tp1_done": False, "order": sig.order,
+                                               "max_hold_bars": sig.max_hold_bars,
+                                               "valid_until": (now + timedelta(minutes=5 * sig.valid_bars)).isoformat()}
                     self._save("trade_meta.json", self.trade_meta)
                     log.info("OPEN %s %s %s vol=%s ticket=%s", sym, row["strategy"], row["direction"], vol, t)
                 except Exception as exc:  # noqa: BLE001
@@ -207,19 +247,31 @@ class Engine:
                 t = self.broker.tick(p.symbol)
                 px = t.bid if p.direction == 1 else t.ask
                 if (px - tp1) * p.direction >= 0:
+                    meta = self.metas.get(p.symbol)
+                    half = (round_volume(p.volume / 2, meta.volume_step, meta.volume_min, meta.volume_max)
+                            if meta else round(p.volume / 2, 2))
                     try:
-                        meta = self.metas.get(p.symbol)
-                        half = max(meta.volume_min, round(p.volume / 2 / meta.volume_step) * meta.volume_step) if meta else p.volume / 2
-                        if half < p.volume:
+                        if 0 < half < p.volume:
                             self.broker.close(p, half)
-                        self.broker.modify_sl(p, p.entry)
+                        # mark done right after the close so a failing SL change can never close half again
                         m["tp1_done"] = True
+                        m["be_pending"] = True
                         self._save("trade_meta.json", self.trade_meta)
                     except Exception as exc:  # noqa: BLE001
                         log.error("partial close failed: %s", exc)
-            # time stop
+                    continue  # positions changed; re-read them next loop
+            if m.get("be_pending"):
+                try:
+                    if (p.sl - p.entry) * p.direction < 0:
+                        self.broker.modify_sl(p, p.entry)
+                    m["be_pending"] = False
+                    self._save("trade_meta.json", self.trade_meta)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("break-even move failed, will retry: %s", exc)
+            # time stop — same holding limit as in the backtest
             opened = datetime.fromisoformat(m["opened"])
-            if datetime.now(UTC) - opened > timedelta(minutes=5 * 288):
+            hold = int(m.get("max_hold_bars", 288))
+            if datetime.now(UTC) - opened > timedelta(minutes=5 * hold):
                 try:
                     self.broker.close(p)
                 except Exception as exc:  # noqa: BLE001
@@ -236,8 +288,16 @@ class Engine:
         for d in deals:
             by_pos[str(d["position"])] = by_pos.get(str(d["position"]), 0.0) + d["profit"]
         changed = False
+        now = datetime.now(UTC)
         for tk, m in list(self.trade_meta.items()):
-            if tk in open_tickets or tk not in by_pos:
+            if tk in open_tickets:
+                continue
+            if tk not in by_pos:
+                # a limit order that expired / was cancelled without filling: forget it
+                vu = m.get("valid_until")
+                if m.get("order") == "limit" and vu and now > datetime.fromisoformat(vu) + timedelta(hours=1):
+                    del self.trade_meta[tk]
+                    changed = True
                 continue
             profit = by_pos[tk]
             r = profit / m["risk_money"] if m.get("risk_money") else (1.0 if profit > 0 else -1.0)

@@ -130,3 +130,26 @@ def test_research_pipeline_runs():
     frames = {"EURUSD": synthetic(days=150, seed=1)}
     res = fusion.research(frames, {"EURUSD": SymbolMeta.guess("EURUSD")}, CFG)
     assert "per_strategy" in res and res["learner"].n_trained > 0
+
+
+def test_utc_to_server_inverse():
+    from asli.live import utc_to_server
+    t = datetime(2026, 1, 15, 8, 0, tzinfo=timezone.utc)
+    s = utc_to_server(t, "ny_plus_7")
+    assert s.replace(tzinfo=None) == datetime(2026, 1, 15, 10, 0)
+    back = server_naive_to_utc(pd.DatetimeIndex([pd.Timestamp(s.replace(tzinfo=None))]), "ny_plus_7")[0]
+    assert back == pd.Timestamp(t)
+
+
+def test_limit_that_hits_entry_and_stop_in_one_bar_is_a_loss():
+    c = ctx(30)
+    i = 600
+    df = c.df
+    lo, hi = df["low"].values[i + 1], df["high"].values[i + 1]
+    entry = hi - 0.1 * (hi - lo)  # long limit inside next bar's range
+    sl = lo + 0.05 * (hi - lo)  # stop also inside it
+    if sl >= entry - 1e-6:
+        return
+    s = Signal(i, df.index[i], "EURUSD", "t", 1, "limit", entry, sl, entry + 3 * (entry - sl), valid_bars=1)
+    t = bt.simulate(s, c)
+    assert t is not None and t.r < -0.9

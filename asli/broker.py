@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger("asli.broker")
 UTC = timezone.utc
@@ -122,6 +122,11 @@ class MT5Broker:
         return self.mt5.ORDER_FILLING_RETURN
 
     def _send(self, req: dict):
+        # re-check the account on every order: someone may have switched the terminal to another account
+        info = self.mt5.account_info()
+        demo = info is not None and info.trade_mode == self.mt5.ACCOUNT_TRADE_MODE_DEMO
+        if info is None or (not demo and not (self.cfg["mode"] == "real" and self.cfg.get("allow_real") is True)):
+            raise RuntimeError("حساب متصل دمو نیست و معامله‌ی واقعی مجاز نشده؛ سفارش ارسال نشد")
         res = self.mt5.order_send(req)
         if res is None or res.retcode not in (self.mt5.TRADE_RETCODE_DONE, self.mt5.TRADE_RETCODE_PLACED,
                                                self.mt5.TRADE_RETCODE_DONE_PARTIAL):
@@ -165,7 +170,8 @@ class MT5Broker:
         self._send({"action": self.mt5.TRADE_ACTION_REMOVE, "order": order.ticket})
 
     def closed_deals(self, since: datetime) -> list[dict]:
-        deals = self.mt5.history_deals_get(since, datetime.now(UTC)) or []
+        # date_to +1 day: deal times are on the server clock, which runs ahead of UTC
+        deals = self.mt5.history_deals_get(since, datetime.now(UTC) + timedelta(days=1)) or []
         out = []
         for d in deals:
             if d.magic != self.magic or d.entry != self.mt5.DEAL_ENTRY_OUT:
