@@ -1,0 +1,19 @@
+name: Engine tests
+
+on:
+  push:
+    branches: [main]
+    paths: ["asli/**", "tests/**", "run_*.py", "requirements.txt", ".github/workflows/tests.yml"]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install numpy pandas PyYAML requests pytest
+      - run: python -m pytest -q tests
+      - run: python run_backtest.py --synthetic

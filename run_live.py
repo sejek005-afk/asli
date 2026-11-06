@@ -37,6 +37,8 @@ def main(argv=None) -> int:
         return 2
     if not (Path(cfg["paths"]["state"]) / "learner.json").exists():
         logging.warning("no trained learner found — run run_backtest.py first; starting untrained")
+    import os
+    (Path(cfg["paths"]["state"]) / "live.pid").write_text(str(os.getpid()))
     mt5 = mt5_connect(cfg)
     mode = cfg["mt5"]["server_time"]
     if mode == "auto":

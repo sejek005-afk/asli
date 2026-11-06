@@ -34,8 +34,9 @@ table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid #2a2f3a;
 <a href="#" onclick="location='/report?token='+tok();return false" style="color:#8ab4ff">گزارش بک‌تست</a></div>
 <div id="out" class="card">...</div>
 <script>
-function tok(){try{return localStorage.getItem('t')||''}catch(e){return ''}}
-function save(){try{localStorage.setItem('t',document.getElementById('t').value)}catch(e){};load()}
+(function(){const q=new URLSearchParams(location.search).get('token');if(q){try{localStorage.setItem('t',q)}catch(e){};window._t=q}})();
+function tok(){if(window._t)return window._t;try{return localStorage.getItem('t')||''}catch(e){return ''}}
+function save(){window._t=document.getElementById('t').value;try{localStorage.setItem('t',window._t)}catch(e){};load()}
 async function post(a){await fetch('/api/'+a+'?token='+tok(),{method:'POST'});load()}
 function esc(s){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
 async function load(){const r=await fetch('/api/status?token='+tok());if(!r.ok){out.textContent='توکن اشتباه';return}
