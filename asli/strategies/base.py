@@ -46,13 +46,13 @@ class Signal:
 class Context:
     """Everything a strategy may read. Built once per symbol per run."""
 
-    def __init__(self, df: pd.DataFrame, meta: SymbolMeta, cfg: dict):
+    def __init__(self, df: pd.DataFrame, meta: SymbolMeta, cfg: dict, daily: pd.DataFrame | None = None):
         self.df = df
         self.meta = meta
         self.cfg = cfg
         self.symbol = meta.name
         self.atr = atr(df, 14)
-        self.daily = DailyContext(df)
+        self.daily = DailyContext(df, daily)
         self.spread = df["spread"].values if "spread" in df else np.zeros(len(df))
         default_spread = cfg["costs"]["default_spread_pips"] * meta.pip
         self.spread = np.where(self.spread > 0, self.spread, default_spread)

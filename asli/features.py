@@ -80,11 +80,17 @@ def body_strength(df: pd.DataFrame, atr_arr: np.ndarray):
 class DailyContext:
     """Per-bar daily context mapped onto an intraday frame (trading day rolls at 17:00 NY)."""
 
-    def __init__(self, df: pd.DataFrame):
+    def __init__(self, df: pd.DataFrame, daily: pd.DataFrame | None = None):
+        """`daily` (optional): broker D1 candles indexed by trading-day date, used live where the intraday
+        window is too short for a 200-day SMA. Otherwise daily candles are built from `df`."""
         self.df = df
         days = trading_day(df.index)
-        d = daily_ny(df)
-        d.index = pd.Index(d.index.date)  # python dates, same type as `days`
+        if daily is not None and len(daily):
+            d = daily[["open", "high", "low", "close"]].copy()
+            d.index = pd.Index([x.date() if hasattr(x, "date") else x for x in d.index])
+        else:
+            d = daily_ny(df)
+            d.index = pd.Index(d.index.date)  # python dates, same type as `days`
         prev = d.shift(1)
         prev2 = d.shift(2)
         # ICT daily bias for day D, decided from the candle of D-1 against D-2
