@@ -33,6 +33,14 @@ risk:
 # strategies:
 #   scalp: {enabled: true, tp_atr: 0.75, sl_atr: 4.0, rsi_level: 5, ny_hours: [2, 12]}
 
+# Trial on demo: NY opening range + hourly channel breakout + scalp, each style with its own position on
+# gold (hedging accounts). donch and the scalp trade only while their own last 12 months are profitable.
+# risk: {max_open_positions: 3, one_position_per: strategy}
+# strategies:
+#   nyorb: {enabled: true}
+#   donch: {enabled: true}          # auto_switch is on by default for this style
+#   scalp: {enabled: true, auto_switch: true}
+
 server:
   port: 8787
   token: "PUT-A-LONG-RANDOM-STRING-HERE"   # the Android app needs the same token

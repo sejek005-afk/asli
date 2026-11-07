@@ -1,5 +1,6 @@
 from .base import Context, Signal, Strategy
 from .crt import CandleRangeTheory
+from .donch import HourlyChannelBreakout
 from .ict import ICTModel2022
 from .lit import LITInducement
 from .orb import OpeningRangeBreakout
@@ -15,6 +16,7 @@ ALL = {
     "orb": OpeningRangeBreakout,
     "scalp": GoldScalp,
     "nyorb": NYOpeningRange,
+    "donch": HourlyChannelBreakout,
 }
 
 
