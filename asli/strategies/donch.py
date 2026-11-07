@@ -22,6 +22,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from ..brain import fmt_price, tehran_hm
 from ..features import atr
 from ..timeutil import ny_hour_float
 from .base import Context, Signal, Strategy
@@ -74,3 +75,41 @@ class HourlyChannelBreakout(Strategy):
                               order="market", entry=e, sl=e - d * sl_k * a, tp=e + d * tp_k * a, valid_bars=1,
                               max_hold_bars=hold, features={"h1_atr": round(a, 3), "channel": n_ch}))
         return out
+
+    def explain(self, ctx: Context) -> dict | None:
+        if not self.applies_to(ctx.symbol):
+            return None
+        p = {**self.p, **(((ctx.cfg.get("strategies") or {}).get(self.name)) or {})}
+        n_ch = int(p.get("channel_bars", 20))
+        sl_k, tp_k = float(p.get("sl_atr", 1.5)), float(p.get("tp_atr", 3.0))
+        use_trend = bool(p.get("with_daily_trend", True))
+        df = ctx.df
+        i = len(df) - 1
+        now = df.index[i]
+        h1 = df[["open", "high", "low", "close"]].resample("1h", label="left", closed="left").agg(
+            {"open": "first", "high": "max", "low": "min", "close": "last"}).dropna()
+        complete = h1 if (now + pd.Timedelta(minutes=5)).minute == 0 else h1.iloc[:-1]
+        if len(complete) < n_ch + 15:
+            return {"state": "waiting", "levels": {}, "text": "هنوز داده‌ی ساعتی کافی ندارد"}
+        hi = float(complete["high"].values[-n_ch:].max())
+        lo = float(complete["low"].values[-n_ch:].min())
+        a = float(atr(complete, 14)[-1])
+        px = float(df["close"].values[i])
+        trend = int(ctx.daily.trend50[i])
+        parts = []
+        if not use_trend or trend == 1:
+            parts.append(f"اگر کندل ساعتی بالای {fmt_price(hi)} بسته شود خرید ({hi - px:+.2f} دلار تا ماشه)")
+        if not use_trend or trend == -1:
+            parts.append(f"اگر کندل ساعتی زیر {fmt_price(lo)} بسته شود فروش ({lo - px:+.2f} دلار تا ماشه)")
+        if not parts:
+            parts.append("روند روزانه نامشخص است؛ فعلاً معامله نمی‌کند")
+        skip_a, skip_b = p.get("skip_ny_hours", [16, 18])
+        text = (f"کانال {n_ch} ساعته: سقف {fmt_price(hi)}، کف {fmt_price(lo)}؛ " + "؛ ".join(parts) +
+                f". استاپ حدود {sl_k * a:.1f} دلار، تارگت حدود {tp_k * a:.1f} دلار. "
+                f"از {tehran_hm(float(skip_a), now)} تا {tehran_hm(float(skip_b), now)} تهران معامله‌ی تازه نمی‌گیرد")
+        last = [s for s in self.generate(ctx) if s.bar >= i - 48 * 12]
+        if last:
+            s = last[-1]
+            t = (s.time + pd.Timedelta(minutes=5)).tz_convert("Asia/Tehran").strftime("%m/%d %H:%M")
+            text += f". آخرین سیگنال: {'خرید' if s.direction == 1 else 'فروش'} {t} تهران"
+        return {"state": "armed", "levels": {"high": hi, "low": lo, "atr_h1": round(a, 2)}, "text": text}

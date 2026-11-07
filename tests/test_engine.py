@@ -442,3 +442,176 @@ def test_styles_share_a_symbol_only_on_hedging_accounts(tmp_path):
     v = DevilsAdvocate(CFG).review({"symbol": "XAUUSD_o", "strategy": "donch", "direction": 1, "rr": 2.0,
                                     "sl_pips": 300, "spread_pips": 2.0}, {"same_strategy_open": True})
     assert not v.approved and any("همین سبک" in x for x in v.vetoes)
+
+
+def _engine(tmp_path, cfg=None):
+    """A live Engine on the paper broker (no MetaTrader)."""
+    import asli.live as live
+    import copy
+    cfg = copy.deepcopy(cfg or {**CFG, "paths": {**CFG["paths"], "state": str(tmp_path), "reports": str(tmp_path)}})
+    return live.Engine(cfg, PaperBroker(10000), None, "utc")  # deep copy: the app settings must not leak into CFG
+
+
+def _cand_trades(style="donch", n=200, mean=0.3, seed=1, start="2024-11-10"):
+    rng = np.random.default_rng(seed)
+    t = pd.date_range(start, periods=n, freq="3D", tz="UTC")
+    r = rng.normal(mean, 1.0, n)
+    return pd.DataFrame({"strategy": style, "time": t, "exit_time": t + pd.Timedelta(hours=6), "r": r,
+                         "entry": 2000.0, "sl": 1990.0})
+
+
+def test_app_settings_are_bounded_and_applied(tmp_path):
+    eng = _engine(tmp_path)
+    v = eng.apply_settings({"risk_per_trade_pct": 9, "max_daily_loss_pct": 0.1, "max_open_positions": 4.6,
+                            "max_leverage": 99, "styles": {"nyorb": True, "ict": False, "bogus": True}})
+    want = {"risk_per_trade_pct": 2.0, "max_daily_loss_pct": 0.5, "max_open_positions": 5, "max_leverage": 30.0,
+            "capital_mode": "auto", "trade_risk_mode": "auto"}
+    assert {k: v["values"][k] for k in want} == want
+    assert eng.cfg["risk"]["risk_per_trade_pct"] == 2.0 and eng.devil.max_open == 5 and eng.devil.max_daily == 0.5
+    names = [s.name for s in eng.strategies]
+    assert "nyorb" in names and "ict" not in names
+    assert (tmp_path / "settings.json").exists()
+    again = _engine(tmp_path)  # a restart keeps what the app set
+    assert again.cfg["risk"]["risk_per_trade_pct"] == 2.0 and "ict" not in [s.name for s in again.strategies]
+
+
+def test_learning_pauses_a_style_far_below_its_backtest_and_restarts_fresh(tmp_path):
+    from asli.brain import Expectations
+    eng = _engine(tmp_path)
+    eng.apply_settings({"styles": {"donch": True}})
+    eng.expect = Expectations(_cand_trades(mean=0.3))
+    assert eng.learning_gate("donch")[0]  # no live trades yet
+    eng.journal = [{"strategy": "donch", "r": -1.0 if k % 3 else 0.5, "closed": f"2026-10-1{k % 9}T10:00:00+00:00"}
+                   for k in range(30)]
+    ok, why = eng.learning_gate("donch")
+    assert not ok and "یادگیری" in why
+    eng.apply_settings({"styles": {"donch": True}})  # switching it on again from the app = fresh comparison
+    assert eng.learning_gate("donch")[0]
+    eng.journal += [{"strategy": "donch", "r": 0.4, "closed": "2099-01-01T10:00:00+00:00"} for _ in range(25)]
+    assert eng._drift_of("donch")["status"] in ("ok", "collecting")
+
+
+def test_risk_preview_follows_the_switch_and_shows_half_edge():
+    from asli.brain import Expectations
+    bad = _cand_trades("scalp", n=150, mean=-0.4, seed=2, start="2023-01-01")
+    good = _cand_trades("scalp", n=150, mean=0.4, seed=3, start="2024-03-01")
+    e = Expectations(pd.concat([bad, good]))
+    raw = e.preview(1.0, ["scalp"])
+    sw = e.preview(1.0, ["scalp"], {"scalp"})
+    assert len(e.switched("scalp")) < 300 and sw["dd_all"] > raw["dd_all"]  # the switch skipped the losing year
+    assert sw["cagr_recent_half"] < sw["cagr_recent"]
+    hi = e.preview(2.0, ["scalp"], {"scalp"})
+    assert hi["dd_recent"] < sw["dd_recent"]  # more risk, deeper drops
+    assert abs(sw["leverage"]["scalp"] - 0.01 / (10 / 2000)) < 1e-9
+
+
+def test_brain_page_explains_what_each_style_waits_for(tmp_path):
+    cfg = {**CFG, "symbols": ["XAUUSD_o"], "paths": {**CFG["paths"], "state": str(tmp_path), "reports": str(tmp_path)}}
+    cfg["strategies"] = {**CFG["strategies"], **{k: {**CFG["strategies"][k], "enabled": k in ("nyorb", "donch", "scalp")}
+                                                 for k in CFG["strategies"]}}
+    eng = _engine(tmp_path, cfg)
+    df = _staircase(days=80)
+    eng.last_ctx["XAUUSD_o"] = Context(df, SymbolMeta.guess("XAUUSD_o"), cfg)
+    b = eng.brain()
+    sym = b["symbols"][0]
+    assert sym["market"]["price"] > 0 and sym["market"]["trend"]["d50"] == 1
+    got = {s["name"]: s for s in sym["styles"]}
+    assert set(got) == {"nyorb", "donch", "scalp"} and all(s["text"] for s in got.values())
+    assert "خرید" in got["donch"]["text"]  # uptrend: only buys
+    assert b["summary"] and isinstance(b["summary"][0], str)
+    assert {x["name"] for x in b["learning"]["styles"]} == {"nyorb", "donch", "scalp"}
+
+
+def test_nyorb_explains_its_day():
+    from asli.strategies.nyorb import NYOpeningRange
+    cfg = {**CFG, "strategies": {**CFG["strategies"], "nyorb": {**CFG["strategies"]["nyorb"], "enabled": True}}}
+    s = NYOpeningRange(cfg["strategies"]["nyorb"])
+    df = _orb_day_frame(break_up=True)
+    ny = df.index.tz_convert("America/New_York")
+    last_day = ny.normalize()[-1]
+
+    def at(h, m):
+        k = np.flatnonzero((ny.normalize() == last_day) & (ny.hour == h) & (ny.minute == m))[0]
+        return s.explain(Context(df.iloc[:k + 1], SymbolMeta.guess("XAUUSD_o"), cfg))
+    assert at(7, 0)["state"] == "waiting"
+    assert at(8, 40)["state"] == "building"
+    assert at(9, 30)["state"] == "done" and "خرید" in at(9, 30)["text"]  # the jump at 09:00 broke the range up
+
+
+def test_api_settings_needs_the_token(tmp_path):
+    import json as _json
+    import urllib.request
+    from asli import server
+    eng = _engine(tmp_path)
+    cfg = {**eng.cfg, "server": {"host": "127.0.0.1", "port": 0, "token": "t0k"}}
+    srv = server.ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(eng, cfg))
+    import threading as _th
+    _th.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    try:
+        try:
+            urllib.request.urlopen(base + "/api/settings")
+            raise AssertionError("no token must be refused")
+        except urllib.error.HTTPError as e:
+            assert e.code == 401
+        req = urllib.request.Request(base + "/api/settings", data=_json.dumps({"risk_per_trade_pct": 1.0}).encode(),
+                                     headers={"Authorization": "Bearer t0k", "Content-Type": "application/json"})
+        out = _json.loads(urllib.request.urlopen(req).read())
+        assert out["values"]["risk_per_trade_pct"] == 1.0
+        html = urllib.request.urlopen(base + "/").read().decode()
+        assert "مغز ربات" in html and "تنظیمات" in html
+        b = _json.loads(urllib.request.urlopen(urllib.request.Request(base + "/api/brain",
+                                                                       headers={"Authorization": "Bearer t0k"})).read())
+        assert "summary" in b
+    finally:
+        srv.shutdown()
+
+
+def test_real_leverage_cap_shrinks_or_skips_orders(tmp_path):
+    from asli.broker import Position
+    eng = _engine(tmp_path)
+    eng.apply_settings({"max_leverage": 2})
+    eng.metas = {"XAUUSD_o": SymbolMeta("XAUUSD_O", 2, 0.01, 0.1, 1.0, 0.01, 0.01, 100.0, 0.01, "XAU", "USD")}
+    # one lot of gold at $2000 is $200,000: 20x a $10,000 account -> cut to $20,000 = 0.10 lot
+    vol, note = eng.cap_leverage("XAUUSD_o", 1.0, 2000.0, 10_000.0)
+    assert abs(vol - 0.10) < 1e-9 and "سقف اهرم" in note
+    assert eng.cap_leverage("XAUUSD_o", 0.05, 2000.0, 10_000.0) == (0.05, "")  # under the cap: untouched
+    eng.broker._pos.append(Position(7, "XAUUSD_o", 1, 0.10, 2000.0, 1990.0, 2020.0, datetime.now(timezone.utc),
+                                    "asli nyorb"))
+    vol, note = eng.cap_leverage("XAUUSD_o", 0.5, 2000.0, 10_000.0)  # the cap is already used up
+    assert vol == 0.0 and "وتو" in note
+    lv = eng.leverage_view()
+    assert lv["cap"] == 2.0 and lv["exposure"] == 20_000.0
+
+
+def test_capital_and_amount_per_trade_auto_or_typed(tmp_path):
+    eng = _engine(tmp_path)  # paper account: 10,000
+    assert eng.capital(10_000) == 10_000 and eng.trade_risk(10_000)[0] == 50.0  # auto: 0.5% of the balance
+    eng.loss_streak = 3
+    money, notes = eng.trade_risk(10_000)
+    assert money == 25.0 and notes  # auto halves after 3 losses in a row
+    eng.apply_settings({"capital_mode": "manual", "capital_usd": 1000, "trade_risk_mode": "manual",
+                        "trade_risk_usd": 15, "max_leverage": 5})
+    assert eng.capital(10_000) == 1000 and eng.capital(800) == 800  # never more than the balance
+    assert eng.trade_risk(10_000) == (15.0, [])  # typed amount: no halving
+    eng.apply_settings({"trade_risk_usd": 500})
+    money, notes = eng.trade_risk(10_000)
+    assert money == 20.0 and "سقف" in notes[0]  # capped at 2% of the 1,000 capital
+    v = eng.settings_view()["sizing"]
+    assert v["capital"] == 1000 and v["risk_money"] == 20.0 and v["capital_mode"] == "manual"
+    eng.metas = {"XAUUSD_o": SymbolMeta("XAUUSD_O", 2, 0.01, 0.1, 1.0, 0.01, 0.01, 100.0, 0.01, "XAU", "USD")}
+    vol, _ = eng.cap_leverage("XAUUSD_o", 1.0, 2000.0, 10_000.0)  # 5x of the 1,000 capital = 5,000 = 0.025 lot
+    assert abs(vol - 0.02) < 1e-9
+    again = _engine(tmp_path)  # kept after a restart
+    assert again.cfg["risk"]["capital_mode"] == "manual" and again.capital(10_000) == 1000
+
+
+def test_daily_loss_counts_only_this_bots_trades(tmp_path):
+    from asli.broker import Position
+    eng = _engine(tmp_path)
+    eng.metas = {"XAUUSD_o": SymbolMeta("XAUUSD_O", 2, 0.01, 0.1, 1.0, 0.01, 0.01, 100.0, 0.01, "XAU", "USD")}
+    eng.broker.equity -= 600  # another bot on the account lost 600: not ours
+    assert eng.account_state("XAUUSD_o")["daily_loss_pct"] == 0.0
+    eng.broker._pos.append(Position(9, "XAUUSD_o", 1, 0.1, 2000.0, 1990.0, 2020.0, datetime.now(timezone.utc), "asli nyorb"))
+    eng.broker.quotes["XAUUSD_o"] = (1990.0, 1990.3)  # our position is $10 x 10 oz = -$100 under water
+    assert abs(eng.account_state("XAUUSD_o")["daily_loss_pct"] - 1.0) < 1e-6  # 100 of 10,000

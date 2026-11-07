@@ -21,6 +21,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from ..brain import tehran_hm
 from ..features import ema, sma
 from ..timeutil import ny_hour_float
 from .base import Context, Signal, Strategy
@@ -76,3 +77,37 @@ class GoldScalp(Strategy):
                               valid_bars=1, max_hold_bars=hold,
                               features={"rsi": round(float(r[i]), 1), "atr": round(float(a[i]), 3)}))
         return out
+
+    def explain(self, ctx: Context) -> dict | None:
+        if not self.applies_to(ctx.symbol):
+            return None
+        p = self.p
+        rsi_n, rsi_lo = int(p.get("rsi_period", 2)), float(p.get("rsi_level", 5))
+        h0, h1 = p.get("ny_hours", [2, 12])
+        fast, slow = int(p.get("h1_fast_bars", 600)), int(p.get("h1_slow_bars", 2400))
+        df = ctx.df
+        n = len(df)
+        if n < slow + 1:
+            return {"state": "waiting", "levels": {}, "text": "هنوز داده‌ی کافی برای روند ساعتی ندارد"}
+        c = df["close"].values
+        i = n - 1
+        e50, e200 = ema(c, 50), ema(c, 200)
+        slope = e50[i] - e50[i - 12]
+        sf, ss = sma(c, fast)[i], sma(c, slow)[i]
+        r = float(rsi(c, rsi_n)[i])
+        up = c[i] > e200[i] and e50[i] > e200[i] and slope > 0 and c[i] > sf and sf > ss
+        dn = c[i] < e200[i] and e50[i] < e200[i] and slope < 0 and c[i] < sf and sf < ss
+        now = df.index[i]
+        win = f"{tehran_hm(float(h0), now)} تا {tehran_hm(float(h1), now)} تهران"
+        hr = float(ny_hour_float(df.index[-1:])[0])
+        when = "الان در بازه‌ی کاری است" if h0 <= hr < h1 else f"بازه‌ی کاری: {win}"
+        if up:
+            text = f"روند ساعتی و ۵ دقیقه‌ای صعودی است؛ منتظر یک افت تند (RSI(2) زیر {rsi_lo:g}، الان {r:.0f}) برای خرید؛ {when}"
+            state = "armed"
+        elif dn:
+            text = f"روند ساعتی و ۵ دقیقه‌ای نزولی است؛ منتظر یک جهش تند (RSI(2) بالای {100 - rsi_lo:g}، الان {r:.0f}) برای فروش؛ {when}"
+            state = "armed"
+        else:
+            text = "روندهای ساعتی و ۵ دقیقه‌ای هم‌جهت نیستند؛ فعلاً اسکلپ نمی‌کند"
+            state = "idle"
+        return {"state": state, "levels": {"rsi2": round(r, 1)}, "text": text}
