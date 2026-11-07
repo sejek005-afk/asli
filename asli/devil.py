@@ -45,23 +45,32 @@ class DevilsAdvocate:
         self.min_rr, self.min_sl, self.max_sl = float(r["min_rr"]), float(r["min_sl_pips"]), float(r["max_sl_pips"])
         self.max_open = int(r["max_open_positions"])
         self.max_daily = float(r["max_daily_loss_pct"])
-        self._limits: dict[str, tuple[float, float, float]] = {}
+        self._limits: dict[tuple[str, str], dict] = {}
 
-    def limits(self, symbol: str | None) -> tuple[float, float, float]:
-        """(min_rr, min_sl_pips, max_sl_pips) for this symbol (gold has its own stop range)."""
-        if not symbol:
-            return self.min_rr, self.min_sl, self.max_sl
-        if symbol not in self._limits:
-            r = for_symbol(self.cfg, symbol)["risk"]
-            self._limits[symbol] = (float(r["min_rr"]), float(r["min_sl_pips"]), float(r["max_sl_pips"]))
-        return self._limits[symbol]
+    def limits(self, symbol: str | None, strategy: str | None = None) -> dict:
+        """Hard-veto thresholds for this symbol and style: gold has its own stop range, and a style may set
+        its own min_rr / min_sl_pips / max_sl_pips / min_ev_r / min_prob in config `strategies`."""
+        key = (symbol or "", strategy or "")
+        if key not in self._limits:
+            cfg = for_symbol(self.cfg, symbol) if symbol else self.cfg
+            r, f = cfg["risk"], cfg["fusion"]
+            lim = {"min_rr": float(r["min_rr"]), "min_sl": float(r["min_sl_pips"]), "max_sl": float(r["max_sl_pips"]),
+                   "min_ev": float(f["min_ev_r"]), "min_prob": float(f["min_prob"])}
+            sp = (cfg.get("strategies") or {}).get(strategy or "", {}) or {}
+            for src, dst in (("min_rr", "min_rr"), ("min_sl_pips", "min_sl"), ("max_sl_pips", "max_sl"),
+                             ("min_ev_r", "min_ev"), ("min_prob", "min_prob")):
+                if src in sp:
+                    lim[dst] = float(sp[src])
+            self._limits[key] = lim
+        return self._limits[key]
 
     def review(self, c: dict, account: dict | None = None) -> Verdict:
         account = account or {}
         v = Verdict(False, 0.0, 0.0)
         d = c.get("direction", 0)
         side = "خرید" if d == 1 else "فروش"
-        min_rr, min_sl, max_sl = self.limits(c.get("symbol"))
+        lim = self.limits(c.get("symbol"), c.get("strategy"))
+        min_rr, min_sl, max_sl, min_prob, min_ev = lim["min_rr"], lim["min_sl"], lim["max_sl"], lim["min_prob"], lim["min_ev"]
 
         # ------------------------------------------------------------ hard vetoes
         if c.get("rr", 0) < min_rr * (0.75 if c.get("tp1") else 1.0):
@@ -81,10 +90,10 @@ class DevilsAdvocate:
         if account.get("same_symbol_open", False):
             v.vetoes.append("روی همین نماد پوزیشن باز داریم")
         p = c.get("prob")
-        if p is not None and p < self.min_prob:
-            v.vetoes.append(f"مدل یادگیرنده احتمال برد را {p:.0%} می‌داند (حداقل {self.min_prob:.0%})")
+        if p is not None and p < min_prob:
+            v.vetoes.append(f"مدل یادگیرنده احتمال برد را {p:.0%} می‌داند (حداقل {min_prob:.0%})")
         e = c.get("ev")
-        if e is not None and e < self.min_ev:
+        if e is not None and e < min_ev:
             v.vetoes.append(f"امید ریاضی {e:+.2f}R است؛ در بلندمدت سودی ندارد")
         spread_share = c.get("spread_pips", 0) / max(sl_p, 1e-9)
         if spread_share > 0.25:
@@ -134,7 +143,7 @@ class DevilsAdvocate:
         if p is not None:
             if p >= 0.5:
                 pro(2, f"مدل یادگیرنده احتمال برد را {p:.0%} می‌داند")
-            elif p >= self.min_prob:
+            elif p >= min_prob:
                 pro(1, f"احتمال برد مدل {p:.0%}")
         if e is not None and e >= 0.2:
             pro(1, f"امید ریاضی مثبت {e:+.2f}R")

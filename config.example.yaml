@@ -29,6 +29,10 @@ risk:
 #     risk: {min_sl_pips: 10, max_sl_pips: 120}
 #     costs: {commission_pips: 1.5}
 
+# Gold scalp style (only XAU symbols). Defaults live in asli/config.py; override any key here, e.g.:
+# strategies:
+#   scalp: {enabled: true, tp_atr: 0.75, sl_atr: 4.0, rsi_level: 5, ny_hours: [2, 12]}
+
 server:
   port: 8787
   token: "PUT-A-LONG-RANDOM-STRING-HERE"   # the Android app needs the same token

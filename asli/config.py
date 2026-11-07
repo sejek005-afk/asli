@@ -46,6 +46,11 @@ DEFAULTS: dict = {
         "trendline": {"enabled": True, "min_touches": 3},
         "crt": {"enabled": True, "candle2_ny_hours": [5, 9], "require_key_level": True},
         "orb": {"enabled": True, "range_minutes": 30, "trade_until_minutes": 150, "max_range_pct_of_median": 1.0},
+        # gold scalp (see asli/strategies/scalp.py). Its own limits for the opposing agent: the target is
+        # ~0.19R by design (win rate ~88%), and the 4-ATR stop is often wider than the gold cap of 100 pips.
+        "scalp": {"enabled": True, "symbols": ["XAU"], "rsi_period": 2, "rsi_level": 5, "sl_atr": 4.0,
+                  "tp_atr": 0.75, "max_hold_bars": 48, "ny_hours": [2, 12], "h1_fast_bars": 600,
+                  "h1_slow_bars": 2400, "min_rr": 0.15, "max_sl_pips": 500.0, "min_ev_r": 0.0},
     },
     "fusion": {
         "min_prob": 0.40,
