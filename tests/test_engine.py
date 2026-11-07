@@ -16,7 +16,7 @@ from asli.devil import DevilsAdvocate  # noqa: E402
 from asli.fundamental import Fundamentals  # noqa: E402
 from asli.learner import Learner  # noqa: E402
 from asli.strategies import Context, Signal, build  # noqa: E402
-from asli.timeutil import server_naive_to_utc  # noqa: E402
+from asli.timeutil import server_naive_to_utc, trading_day  # noqa: E402
 
 CFG = load_config(Path(__file__).parent / "none.yaml")
 
@@ -281,3 +281,45 @@ def test_engine_reconnects_after_terminal_restart(monkeypatch):
     assert calls == ["shutdown", "connect"]
     eng._ensure_mt5()  # throttled: no second attempt within 30 s
     assert calls == ["shutdown", "connect"]
+
+
+def _orb_day_frame(break_up=True, days=60):
+    """Synthetic gold M5 bars: a quiet range 08:30-09:00 NY, then a clean break (prices rise over the days
+    so the 50-day trend is up)."""
+    idx = pd.date_range("2026-01-05 00:00", periods=days * 288, freq="5min", tz="UTC")
+    ny = idx.tz_convert("America/New_York")
+    hc = ny.hour + (ny.minute + 5) / 60.0
+    base = 2000 + np.arange(len(idx)) * 0.002
+    px = base.copy()
+    after = (hc > 9.0) & (hc <= 11.0)
+    px = np.where(after, px + (6.0 if break_up else -6.0), px)
+    df = pd.DataFrame({"open": px, "high": px + 1.0, "low": px - 1.0, "close": px, "spread": 0.2}, index=idx)
+    return df
+
+
+def test_ny_opening_range_style():
+    from asli.strategies.nyorb import NYOpeningRange
+    cfg = {**CFG, "strategies": {**CFG["strategies"], "nyorb": {**CFG["strategies"]["nyorb"], "enabled": True}}}
+    s = NYOpeningRange(cfg["strategies"]["nyorb"])
+    df = _orb_day_frame(break_up=True)
+    assert s.generate(Context(df, SymbolMeta.guess("EURUSD"), cfg)) == []  # gold only
+    sig = s.generate(Context(df, SymbolMeta.guess("XAUUSD_o"), cfg))
+    assert sig and all(x.direction == 1 for x in sig)  # up-breaks in an uptrend
+    days = [str(trading_day(pd.DatetimeIndex([x.time]))[0]) for x in sig]
+    assert len(days) == len(set(days))  # one trade per day at most
+    for x in sig:
+        ny_h = x.time.tz_convert("America/New_York")
+        assert 9 <= ny_h.hour + ny_h.minute / 60 + 5 / 60 <= 11.5 + 1e-9
+        assert x.sl < x.entry < x.tp and x.max_hold_bars >= 1
+    down = s.generate(Context(_orb_day_frame(break_up=False), SymbolMeta.guess("XAUUSD_o"), cfg))
+    assert down == []  # down-breaks against the 50-day uptrend are skipped
+
+
+def test_nyorb_agent_is_advisory_but_safety_vetoes_hold():
+    d = DevilsAdvocate(CFG)
+    row = {"symbol": "XAUUSD_o", "strategy": "nyorb", "direction": 1, "rr": 1.6, "sl_pips": 150, "spread_pips": 2.2,
+           "prob": 0.2, "ev": -0.3, "bias_align": -1, "trend_align": -1, "confluence": 0, "opposition": 1,
+           "killzone": False, "key_level": False, "pd_align": -0.5, "hour_edge": -0.1}
+    assert d.review(row).approved
+    assert not d.review({**row, "news_blackout": {"title": "CPI", "cur": "USD", "impact": "High"}}).approved
+    assert not d.review({**row, "sl_pips": 600}).approved

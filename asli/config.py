@@ -49,13 +49,23 @@ DEFAULTS: dict = {
         "orb": {"enabled": True, "range_minutes": 30, "trade_until_minutes": 150, "max_range_pct_of_median": 1.0},
         # gold scalp (see asli/strategies/scalp.py). Its own limits for the opposing agent: the target is
         # ~0.19R by design (win rate ~88%), and the 4-ATR stop is often wider than the gold cap of 100 pips.
-        "scalp": {"enabled": True, "symbols": ["XAU"], "rsi_period": 2, "rsi_level": 5, "sl_atr": 4.0,
+        # off by default: on 6 years of gold it lost every year 2021-2025 (only 2026 was profitable)
+        "scalp": {"enabled": False, "symbols": ["XAU"], "rsi_period": 2, "rsi_level": 5, "sl_atr": 4.0,
                   "tp_atr": 0.75, "max_hold_bars": 48, "ny_hours": [2, 12], "h1_fast_bars": 600,
                   "h1_slow_bars": 2400, "min_rr": 0.15, "max_sl_pips": 500.0,
                   # the learner's probability / EV vetoes are off for the scalp: in a 13-month monthly-retrained
                   # walk-forward they removed 60% of scalps without raising the win rate. The opposing agent's
                   # debate (and every safety veto: news, stops, spread, daily loss) still decides.
                   "min_prob": 0.0, "min_ev_r": -9.0},
+        # gold New-York opening range (see asli/strategies/nyorb.py); off unless enabled in config.yaml.
+        # The 30-min range of gold is often $5-15, wider than the gold stop cap of 100 pips, hence its own cap.
+        "nyorb": {"enabled": False, "symbols": ["XAU"], "range_start_ny": 8.5, "range_minutes": 30,
+                  "entry_until_ny": 11.5, "flat_at_ny": 15.0, "tp_range": 2.0, "with_daily_trend": True,
+                  "min_rr": 1.0, "max_sl_pips": 400.0,
+                  # 6-year monthly walk-forward: the learner and the debate did not improve it out of sample
+                  # (unfiltered +0.049R vs +0.008R agent-only vs -0.020R learner+agent on 2024-26), so for this
+                  # style they only advise; every safety veto (news, stops, spread, daily loss) still applies.
+                  "min_prob": 0.0, "min_ev_r": -9.0, "approve_margin": -99},
     },
     "fusion": {
         "min_prob": 0.40,

@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-STRATS = ["ict", "lit", "trendline", "crt", "orb", "scalp"]
+STRATS = ["ict", "lit", "trendline", "crt", "orb", "scalp", "nyorb"]
 SESSIONS = ["asia", "london", "newyork", "late"]
 
 
