@@ -99,9 +99,11 @@ class DailyContext:
         bias = np.where(bull & ~bear, 1, np.where(bear & ~bull, -1, 0))
         sma200 = d["close"].rolling(200, min_periods=50).mean().shift(1)
         trend = np.where(prev["close"] > sma200, 1, np.where(prev["close"] < sma200, -1, 0))
+        sma50 = d["close"].rolling(50, min_periods=50).mean().shift(1)
+        trend50 = np.where(prev["close"] > sma50, 1, np.where(prev["close"] < sma50, -1, 0))
         med_range = (d["high"] - d["low"]).rolling(20, min_periods=5).median().shift(1)
         table = pd.DataFrame({
-            "pdh": prev["high"], "pdl": prev["low"], "bias": bias, "trend": trend,
+            "pdh": prev["high"], "pdl": prev["low"], "bias": bias, "trend": trend, "trend50": trend50,
             "adr": med_range,
         }, index=d.index)
         mapped = table.reindex(pd.Index(days))
@@ -109,6 +111,8 @@ class DailyContext:
         self.pdl = mapped["pdl"].values.astype(float)
         self.bias = np.nan_to_num(mapped["bias"].values.astype(float)).astype(int)
         self.trend = np.nan_to_num(mapped["trend"].values.astype(float)).astype(int)
+        # previous day's close vs the 50-day average of closes (needs 50 finished days; 0 until then)
+        self.trend50 = np.nan_to_num(mapped["trend50"].values.astype(float)).astype(int)
         self.adr = mapped["adr"].values.astype(float)
         self.day = np.asarray(days)
         # Asian range: NY 20:00-24:00 of the trading day, valid after midnight NY
