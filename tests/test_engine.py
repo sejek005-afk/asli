@@ -210,3 +210,14 @@ def test_devil_lets_scalp_use_its_own_limits():
 def test_learner_knows_the_scalp_style():
     from asli.learner import feature_names
     assert "s_scalp" in feature_names()
+
+
+def test_style_can_set_its_own_debate_margin_and_skip_learner_vetoes():
+    d = DevilsAdvocate(CFG)
+    row = {"symbol": "XAUUSD_o", "strategy": "scalp", "direction": -1, "rr": 0.19, "sl_pips": 177,
+           "spread_pips": 2.2, "prob": 0.30, "ev": -0.4, "bias_align": 1, "trend_align": 1, "confluence": 0,
+           "opposition": 0, "killzone": True, "key_level": False, "pd_align": 0.0, "hour_edge": 0.0}
+    assert d.review(row).approved  # scalp: learner prob/EV are advice only
+    assert not d.review({**row, "news_blackout": {"title": "CPI", "cur": "USD", "impact": "High"}}).approved
+    cfg = {**CFG, "strategies": {**CFG["strategies"], "scalp": {**CFG["strategies"]["scalp"], "approve_margin": 9}}}
+    assert not DevilsAdvocate(cfg).review(row).approved
