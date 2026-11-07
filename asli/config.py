@@ -50,7 +50,11 @@ DEFAULTS: dict = {
         # ~0.19R by design (win rate ~88%), and the 4-ATR stop is often wider than the gold cap of 100 pips.
         "scalp": {"enabled": True, "symbols": ["XAU"], "rsi_period": 2, "rsi_level": 5, "sl_atr": 4.0,
                   "tp_atr": 0.75, "max_hold_bars": 48, "ny_hours": [2, 12], "h1_fast_bars": 600,
-                  "h1_slow_bars": 2400, "min_rr": 0.15, "max_sl_pips": 500.0, "min_ev_r": 0.0},
+                  "h1_slow_bars": 2400, "min_rr": 0.15, "max_sl_pips": 500.0,
+                  # the learner's probability / EV vetoes are off for the scalp: in a 13-month monthly-retrained
+                  # walk-forward they removed 60% of scalps without raising the win rate. The opposing agent's
+                  # debate (and every safety veto: news, stops, spread, daily loss) still decides.
+                  "min_prob": 0.0, "min_ev_r": -9.0},
     },
     "fusion": {
         "min_prob": 0.40,

@@ -49,16 +49,16 @@ class DevilsAdvocate:
 
     def limits(self, symbol: str | None, strategy: str | None = None) -> dict:
         """Hard-veto thresholds for this symbol and style: gold has its own stop range, and a style may set
-        its own min_rr / min_sl_pips / max_sl_pips / min_ev_r / min_prob in config `strategies`."""
+        its own min_rr / min_sl_pips / max_sl_pips / min_ev_r / min_prob / approve_margin in config `strategies`."""
         key = (symbol or "", strategy or "")
         if key not in self._limits:
             cfg = for_symbol(self.cfg, symbol) if symbol else self.cfg
             r, f = cfg["risk"], cfg["fusion"]
             lim = {"min_rr": float(r["min_rr"]), "min_sl": float(r["min_sl_pips"]), "max_sl": float(r["max_sl_pips"]),
-                   "min_ev": float(f["min_ev_r"]), "min_prob": float(f["min_prob"])}
+                   "min_ev": float(f["min_ev_r"]), "min_prob": float(f["min_prob"]), "margin": self.margin}
             sp = (cfg.get("strategies") or {}).get(strategy or "", {}) or {}
             for src, dst in (("min_rr", "min_rr"), ("min_sl_pips", "min_sl"), ("max_sl_pips", "max_sl"),
-                             ("min_ev_r", "min_ev"), ("min_prob", "min_prob")):
+                             ("min_ev_r", "min_ev"), ("min_prob", "min_prob"), ("approve_margin", "margin")):
                 if src in sp:
                     lim[dst] = float(sp[src])
             self._limits[key] = lim
@@ -162,5 +162,5 @@ class DevilsAdvocate:
         if account.get("loss_streak", 0) >= 3:
             con(1, f"{account['loss_streak']} ضرر پشت‌سرهم؛ بازار با سبک‌ها هماهنگ نیست")
 
-        v.approved = not v.vetoes and (v.score_pro - v.score_con) >= self.margin
+        v.approved = not v.vetoes and (v.score_pro - v.score_con) >= lim["margin"]
         return v
