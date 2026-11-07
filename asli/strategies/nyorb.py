@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from ..brain import fmt_price, tehran_hm
 from ..timeutil import ny_hour_float
 from .base import Context, Signal, Strategy
 
@@ -77,3 +78,58 @@ class NYOpeningRange(Strategy):
                               order="market", entry=e, sl=float(stop), tp=e + d * tp_k * r, valid_bars=1,
                               max_hold_bars=hold, features={"range": round(float(r), 2)}))
         return out
+
+    def explain(self, ctx: Context) -> dict | None:
+        if not self.applies_to(ctx.symbol):
+            return None
+        p = {**self.p, **(((ctx.cfg.get("strategies") or {}).get(self.name)) or {})}
+        start = float(p.get("range_start_ny", 8.5))
+        end = start + float(p.get("range_minutes", 30)) / 60.0
+        until = float(p.get("entry_until_ny", 11.5))
+        use_trend = bool(p.get("with_daily_trend", True))
+        df = ctx.df
+        i = len(df) - 1
+        now = df.index[i]
+        hc = ny_hour_float(df.index) + 5.0 / 60.0
+        h = float(hc[i])
+        day = ctx.daily.day
+        today = day == day[i]
+        trend = int(ctx.daily.trend50[i])
+        side = {1: "فقط خرید (روند روزانه صعودی)", -1: "فقط فروش (روند روزانه نزولی)",
+                0: "روند روزانه نامشخص است، پس امروز معامله نمی‌کند"}[trend if use_trend else 0] \
+            if use_trend else "هر دو طرف"
+        r0, r1, last = tehran_hm(start, now), tehran_hm(end, now), tehran_hm(until, now)
+        if h > 17.0 or h <= start:
+            return {"state": "waiting", "levels": {},
+                    "text": f"منتظر رنج {r0} تا {r1} به وقت تهران؛ {side}"}
+        rng = today & (hc > start + 1e-9) & (hc <= end + 1e-9)
+        hi = float(df["high"].values[rng].max()) if rng.any() else float("nan")
+        lo = float(df["low"].values[rng].min()) if rng.any() else float("nan")
+        if h <= end + 1e-9:
+            return {"state": "building", "levels": {"high": hi, "low": lo},
+                    "text": f"در حال ساختن رنج تا {r1}: سقف تا الان {fmt_price(hi)}، کف {fmt_price(lo)}"}
+        if not np.isfinite(hi) or hi <= lo:
+            return {"state": "done", "levels": {}, "text": "امروز رنج کامل نشد؛ فردا دوباره"}
+        c = df["close"].values
+        after = np.flatnonzero(today & (hc > end + 1e-9) & (hc <= until + 1e-9))
+        for j in after:
+            d = 1 if c[j] > hi else (-1 if c[j] < lo else 0)
+            if d:
+                word = "خرید" if d == 1 else "فروش"
+                if use_trend and trend != d:
+                    return {"state": "done", "levels": {"high": hi, "low": lo},
+                            "text": f"اولین شکست امروز ({word}) خلاف روند بود؛ امروز معامله نمی‌کند"}
+                return {"state": "done", "levels": {"high": hi, "low": lo},
+                        "text": f"امروز سیگنال {word} داد، ساعت {tehran_hm(float(hc[j]), now)} به وقت تهران"}
+        if h <= until + 1e-9:
+            px = float(c[i])
+            parts = []
+            if not use_trend or trend == 1:
+                parts.append(f"اگر کندل ۵ دقیقه بالای {fmt_price(hi)} بسته شود خرید ({hi - px:+.2f} دلار تا ماشه)")
+            if not use_trend or trend == -1:
+                parts.append(f"اگر زیر {fmt_price(lo)} بسته شود فروش ({lo - px:+.2f} دلار تا ماشه)")
+            if not parts:
+                parts.append("روند روزانه نامشخص است؛ امروز معامله نمی‌کند")
+            return {"state": "armed", "levels": {"high": hi, "low": lo},
+                    "text": f"رنج آماده است (سقف {fmt_price(hi)}، کف {fmt_price(lo)}): " + "؛ ".join(parts) + f"؛ تا {last}"}
+        return {"state": "done", "levels": {"high": hi, "low": lo}, "text": "امروز شکستی نبود؛ فردا دوباره"}

@@ -8,28 +8,39 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import subprocess
+import sys
 import threading
 import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from . import backtest as bt
+from . import brain as brainlib
 from .broker import lot_size, round_volume
-from .config import for_symbol
-from .data import mt5_connect, mt5_history, mt5_recent, mt5_symbol_meta
+from .config import ROOT, for_symbol
+from .data import market_closed, mt5_connect, mt5_history, mt5_recent, mt5_symbol_meta
 from .devil import DevilsAdvocate
 from .fundamental import Fundamentals
 from .fusion import annotate
 from .learner import Learner
+from .strategies import ALL as ALL_STYLES
 from .strategies import Context, build
 from .timeutil import EET, NY, trading_day
 
 log = logging.getLogger("asli.live")
 UTC = timezone.utc
 BARS = 3000  # ~10 trading days of M5
+# what the app may change at runtime, with hard bounds (state/settings.json, applied over config.yaml)
+SETTING_BOUNDS = {"risk_per_trade_pct": (0.05, 2.0), "max_daily_loss_pct": (0.5, 6.0), "max_open_positions": (1, 6),
+                  "max_leverage": (1.0, 30.0), "capital_usd": (10.0, 10_000_000.0), "trade_risk_usd": (0.5, 1_000_000.0)}
+MODE_KEYS = {"capital_mode": ("auto", "manual"), "trade_risk_mode": ("auto", "manual")}
+MAX_TRADE_RISK_PCT = 2.0  # a hand-typed amount per trade is capped at this share of the capital
 
 
 def utc_to_server(t: datetime, mode: str) -> datetime:
@@ -72,6 +83,11 @@ class Engine:
         self.day_start_balance = None
         self.day_key = None
         self.switch: dict = self._load("switch.json", {})
+        self.last_ctx: dict[str, Context] = {}
+        self.expect = brainlib.Expectations.load(cfg["paths"]["reports"])
+        self.update_state: dict = {"state": "idle", "log": []}
+        self.settings: dict = {}
+        self.apply_settings(self._load("settings.json", {}), save=False)
         # look back to the oldest trade we still track (covers restarts after long downtime)
         opened = [datetime.fromisoformat(m["opened"]) for m in self.trade_meta.values() if m.get("opened")]
         self._deals_since = min(opened + [datetime.now(UTC)]) - timedelta(days=1)
@@ -132,8 +148,8 @@ class Engine:
     def account_state(self, symbol: str, strategy: str | None = None) -> dict:
         acc = self.broker.account()
         self._roll_day(acc)
-        start = self.day_start_balance or acc["balance"]
-        loss_pct = max(0.0, (start - acc["equity"]) / start * 100) if start else 0.0
+        start = self.capital(self.day_start_balance or acc["balance"])
+        loss_pct = max(0.0, -self.own_day_pl()) / start * 100 if start else 0.0  # this bot's own trades only
         pos = self.broker.positions()
         orders = self.broker.orders()
         mine = [x for x in list(pos) + list(orders) if x.symbol == symbol]
@@ -228,6 +244,290 @@ class Engine:
             return True, ""
         return False, f"کلید خودکار خاموش است ({info.get('why', '')})"
 
+    # ------------------------------------------------------------------ runtime settings (from the app)
+    def apply_settings(self, s: dict, save: bool = True) -> dict:
+        """Validate and apply settings sent by the app; unknown keys are ignored, numbers are clamped."""
+        s = dict(s or {})
+        cur = dict(self.settings)
+        for k, (lo, hi) in SETTING_BOUNDS.items():
+            if k in s and s[k] is not None:
+                v = float(s[k])
+                v = int(round(v)) if k == "max_open_positions" else round(v, 2)
+                cur[k] = min(max(v, lo), hi)
+        for k, allowed in MODE_KEYS.items():
+            if s.get(k) in allowed:
+                cur[k] = s[k]
+        styles = dict(cur.get("styles", {}))
+        for name, on in (s.get("styles") or {}).items():
+            if name in ALL_STYLES:
+                styles[name] = bool(on)
+        cur["styles"] = styles
+        resets = dict(cur.get("learning_reset", {}))
+        now = datetime.now(UTC).isoformat()
+        for name in s.get("reset_learning") or []:
+            if name in ALL_STYLES:
+                resets[name] = now
+        for name, on in (s.get("styles") or {}).items():  # switching a style on again starts a fresh comparison
+            if on and name in ALL_STYLES and self._drift_of(name).get("status") == "drift":
+                resets[name] = now
+        cur["learning_reset"] = resets
+        # apply to the running config
+        r = self.cfg["risk"]
+        for k in MODE_KEYS:
+            if k in cur:
+                r[k] = cur[k]
+        for k in SETTING_BOUNDS:
+            if k in cur:
+                r[k] = cur[k]
+                for ov in (self.cfg.get("symbol_overrides") or {}).values():
+                    if isinstance(ov, dict) and k in (ov.get("risk") or {}):
+                        ov["risk"][k] = cur[k]
+        for name, on in styles.items():
+            self.cfg["strategies"].setdefault(name, {})["enabled"] = on
+        self.strategies = build(self.cfg)
+        self.devil.max_daily = float(r["max_daily_loss_pct"])
+        self.devil.max_open = int(r["max_open_positions"])
+        cur["updated_at"] = now if save else cur.get("updated_at")
+        self.settings = cur
+        if save:
+            self._save("settings.json", cur)
+            log.info("settings changed from the app: %s", {k: v for k, v in cur.items() if k != "learning_reset"})
+        return self.settings_view()
+
+    def settings_view(self) -> dict:
+        r = self.cfg["risk"]
+        enabled = [s.name for s in self.strategies]
+        styles = []
+        for name in ALL_STYLES:
+            badge, note = brainlib.verdict(name)
+            styles.append({"name": name, "title": brainlib.title(name), "enabled": name in enabled, "badge": badge,
+                           "note": note, "auto_switch": bool(self.cfg["strategies"].get(name, {}).get("auto_switch"))})
+        sw = {s.name for s in self.strategies if s.p.get("auto_switch")}
+        preview = [self.expect.preview(x, enabled, sw) for x in (0.1, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0)]
+        order = {"تأییدشده": 0, "آزمایشی": 1}
+        styles.sort(key=lambda x: (not x["enabled"], order.get(x["badge"], 2)))
+        return {"values": {**{k: r[k] for k in SETTING_BOUNDS}, **{k: r.get(k, "auto") for k in MODE_KEYS}},
+                "bounds": SETTING_BOUNDS, "styles": styles, "sizing": self.sizing_view(),
+                "preview": preview, "current_preview": self.expect.preview(float(r["risk_per_trade_pct"]), enabled, sw),
+                "leverage": self.leverage_view(), "updated_at": self.settings.get("updated_at")}
+
+    # ------------------------------------------------------------------ money: capital and amount per trade
+    def capital(self, balance: float) -> float:
+        """Money the bot sizes from: the whole balance (auto) or the amount typed in the app, at most the balance."""
+        r = self.cfg["risk"]
+        if r.get("capital_mode") == "manual" and float(r.get("capital_usd") or 0) > 0:
+            return min(float(r["capital_usd"]), balance)
+        return balance
+
+    def trade_risk(self, balance: float, risk_pct: float | None = None) -> tuple[float, list[str]]:
+        """Money at risk on the next trade (lost if its stop is hit) and why."""
+        r = self.cfg["risk"]
+        cap = self.capital(balance)
+        notes = []
+        if r.get("trade_risk_mode") == "manual" and float(r.get("trade_risk_usd") or 0) > 0:
+            money = float(r["trade_risk_usd"])
+            top = cap * MAX_TRADE_RISK_PCT / 100.0
+            if money > top:
+                notes.append(f"مبلغ دستی {money:,.0f} دلار به سقف {MAX_TRADE_RISK_PCT:g}٪ سرمایه ({top:,.0f} دلار) کم شد")
+                money = top
+            return money, notes
+        pct = float(r["risk_per_trade_pct"]) if risk_pct is None else risk_pct
+        if self.loss_streak >= int(r.get("halve_after_losses", 3)):
+            pct /= 2
+            notes.append(f"بعد از {self.loss_streak} ضرر پشت سر هم، مبلغ هر معامله نصف شد")
+        return cap * pct / 100.0, notes
+
+    def sizing_view(self) -> dict:
+        try:
+            bal = float(self.broker.account()["balance"])
+        except Exception:  # noqa: BLE001
+            return {}
+        r = self.cfg["risk"]
+        cap = self.capital(bal)
+        money, notes = self.trade_risk(bal)
+        return {"balance": round(bal, 2), "capital": round(cap, 2), "capital_mode": r.get("capital_mode", "auto"),
+                "trade_risk_mode": r.get("trade_risk_mode", "auto"), "risk_money": round(money, 2),
+                "risk_pct_of_capital": round(money / cap * 100, 3) if cap > 0 else None, "notes": notes,
+                "max_trade_risk_pct": MAX_TRADE_RISK_PCT}
+
+    def own_day_pl(self) -> float:
+        """This bot's own profit since the 17:00 New-York day roll: closed trades + open positions at current
+        prices. Other bots on the same account (e.g. NeuroTrader) do not count."""
+        today = self.day_key or str(trading_day(pd.DatetimeIndex([pd.Timestamp.now(tz=UTC)]))[0])
+        closed = [j for j in getattr(self, "journal", []) if j.get("closed")]
+        pl = 0.0
+        if closed:
+            days = trading_day(pd.DatetimeIndex(pd.to_datetime([j["closed"] for j in closed], utc=True)))
+            pl += sum(float(j.get("profit") or 0) for j, d in zip(closed, days) if str(d) == today)
+        for p in self.broker.positions():
+            try:
+                tk = self.broker.tick(p.symbol)
+                px = tk.bid if p.direction == 1 else tk.ask
+                pl += p.direction * (px - p.entry) * p.volume * self._value_per_lot(p.symbol, 1.0)
+            except Exception:  # noqa: BLE001
+                continue
+        return pl
+
+    def _value_per_lot(self, symbol: str, price: float) -> float:
+        """Account-currency value of one lot at `price` (gold: 100 oz x price)."""
+        meta = getattr(self, "metas", {}).get(symbol)
+        return price * (meta.tick_value / meta.tick_size) if meta and meta.tick_size else price
+
+    def exposure(self) -> float:
+        """Account-currency value of every open ASLI position and pending order."""
+        tot = 0.0
+        for p in self.broker.positions():
+            tot += abs(p.volume) * self._value_per_lot(p.symbol, p.entry)
+        for o in self.broker.orders():
+            tot += abs(o.volume) * self._value_per_lot(o.symbol, o.price)
+        return tot
+
+    def leverage_view(self) -> dict:
+        """Account leverage (set by the broker), the leverage the open positions really use, and our cap."""
+        cap = float(self.cfg["risk"].get("max_leverage", 0) or 0)
+        try:
+            acc = self.broker.account()
+            exposure = self.exposure()
+        except Exception:  # noqa: BLE001
+            return {"account": None, "effective": None, "exposure": None, "cap": cap}
+        eq = float(acc.get("equity") or 0.0)
+        return {"account": acc.get("leverage"), "exposure": round(exposure, 2),
+                "effective": round(exposure / eq, 2) if eq > 0 else None, "cap": cap}
+
+    def cap_leverage(self, symbol: str, vol: float, price: float, equity: float) -> tuple[float, str]:
+        """Shrink an order so open positions + orders + this one stay within risk.max_leverage x the bot's
+        capital (the equity, or the hand-typed capital if smaller)."""
+        cap = float(self.cfg["risk"].get("max_leverage", 0) or 0)
+        meta = self.metas.get(symbol)
+        equity = self.capital(equity)
+        if cap <= 0 or equity <= 0 or vol <= 0 or meta is None:
+            return vol, ""
+        per_lot = self._value_per_lot(symbol, price)
+        room = cap * equity - self.exposure()
+        if per_lot <= 0 or vol * per_lot <= room:
+            return vol, ""
+        new = round_volume(max(room, 0.0) / per_lot, meta.volume_step, meta.volume_min, meta.volume_max)
+        if new <= 0:
+            return 0.0, f"وتو: سقف اهرم واقعی {cap:g}× پر است (حجم باز ربات {self.exposure() / equity:.1f}× اکوییتی)"
+        return new, f"حجم به خاطر سقف اهرم واقعی {cap:g}× از {vol:g} به {new:g} لات کم شد"
+
+    # ------------------------------------------------------------------ learning: live vs backtest
+    def _live_r(self, strategy: str) -> list[float]:
+        since = (self.settings.get("learning_reset") or {}).get(strategy)
+        return [float(j["r"]) for j in self.journal
+                if j.get("strategy") == strategy and (not since or str(j.get("closed", "")) >= since)]
+
+    def _drift_of(self, strategy: str) -> dict:
+        lc = self.cfg.get("learning") or {}
+        return brainlib.drift(self.expect.by_style.get(strategy), self._live_r(strategy),
+                              int(lc.get("drift_min_trades", 20)), float(lc.get("drift_z", 2.0)))
+
+    def learning_gate(self, strategy: str) -> tuple[bool, str]:
+        if not (self.cfg.get("learning") or {}).get("auto_pause_on_drift", True):
+            return True, ""
+        d = self._drift_of(strategy)
+        if d.get("status") == "drift":
+            return False, "یادگیری: " + d["text"] + " — از اپ دوباره روشنش کنید تا از نو مقایسه شود"
+        return True, ""
+
+    def styles_view(self) -> list[dict]:
+        out = []
+        for s in self.strategies:
+            live = self._live_r(s.name)
+            exp = self.expect.by_style.get(s.name) or {}
+            sw = {k.split("|", 1)[1]: v for k, v in self.switch.items() if "|" in k and k.split("|", 1)[1] == s.name}
+            out.append({"name": s.name, "title": brainlib.title(s.name), "badge": brainlib.verdict(s.name)[0],
+                        "switch": sw.get(s.name), "auto_switch": bool(s.p.get("auto_switch")),
+                        "live": {"n": len(live), "win": round(float(np.mean([x > 0 for x in live])), 3) if live else None,
+                                 "avg_r": round(float(np.mean(live)), 3) if live else None,
+                                 "total_r": round(float(np.sum(live)), 2) if live else 0.0},
+                        "expected": {k: (round(v, 3) if isinstance(v, float) else v) for k, v in exp.items()},
+                        "drift": self._drift_of(s.name)})
+        return out
+
+    # ------------------------------------------------------------------ the brain page
+    def brain(self) -> dict:
+        now = datetime.now(UTC)
+        with self.lock:
+            out = {"time": now.isoformat(), "market_open": not market_closed(now), "symbols": []}
+            for symbol in self.cfg["symbols"]:
+                ctx = self.last_ctx.get(symbol)
+                entry = {"symbol": symbol, "market": None, "styles": []}
+                if ctx is not None:
+                    try:
+                        entry["market"] = brainlib.market_view(ctx, now)
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("brain market view failed: %s", exc)
+                for s in self.strategies:
+                    info = None
+                    if ctx is not None:
+                        try:
+                            info = s.explain(ctx)
+                        except Exception as exc:  # noqa: BLE001
+                            info = {"state": "error", "text": f"خطا در توضیح: {exc}"}
+                    if info is None and ctx is not None:
+                        continue
+                    ok1, why1 = self.switch_on(symbol, s.name)
+                    ok2, why2 = self.learning_gate(s.name)
+                    entry["styles"].append({"name": s.name, "title": brainlib.title(s.name), "enabled": True,
+                                            **(info or {"state": "waiting", "text": "منتظر اولین داده از متاتریدر"}),
+                                            "gate": {"ok": ok1 and ok2, "why": why1 or why2}})
+                out["symbols"].append(entry)
+            fs = self.fund.snapshot(self.cfg["symbols"])
+            for e in fs.get("upcoming", []):
+                e["tehran"] = brainlib.to_tehran(e["time"])
+            bo = self.fund.blackout(self.cfg["symbols"][0], now) if self.cfg["symbols"] else None
+            out["news"] = {"upcoming": fs.get("upcoming", []), "calendar_ok": fs.get("calendar_ok"),
+                           "risk_off": fs.get("risk_off"), "headlines": fs.get("headlines", [])[-5:],
+                           "blackout": bo and {"title": bo.get("title"), "cur": bo.get("cur"), "impact": bo.get("impact")}}
+            styles = self.styles_view()
+            best = self.learner.best_times(min_edge=0.03)
+            for st in styles:
+                st["enabled"] = True
+                st["best_hours"] = [f"{brainlib.tehran_hm(float(b['ny_hour']))} ({b['edge_r']:+.2f}R)"
+                                    for b in best if b["strategy"] == st["name"]][:4]
+            out["learning"] = {"styles": styles, "learner": {"n_trained": self.learner.n_trained,
+                                                             "live_updates": self.learner.n_live_updates}}
+            out["summary"] = brainlib.summary_lines(out)
+            return out
+
+    # ------------------------------------------------------------------ update from the app
+    def start_update(self) -> dict:
+        """git pull + requirements + backtest, then exit so start_live.cmd's loop restarts the new code."""
+        if self.update_state.get("state") == "running":
+            return self.update_state
+        self.update_state = {"state": "running", "log": [], "started": datetime.now(UTC).isoformat()}
+
+        def run(cmd: list[str], timeout: int) -> tuple[int, str]:
+            try:
+                p = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True, timeout=timeout)
+                out = (p.stdout + p.stderr).strip()
+                return p.returncode, out[-3000:]
+            except Exception as exc:  # noqa: BLE001
+                return 1, str(exc)
+
+        def job():
+            st = self.update_state
+            code, out = run(["git", "pull", "--ff-only"], 180)
+            st["log"].append(f"$ git pull\n{out}")
+            if code != 0:
+                st["state"] = "failed"
+                return
+            if "Already up to date" in out or "Already up-to-date" in out:
+                st["state"] = "up_to_date"
+                return
+            code, out = run([sys.executable, "-m", "pip", "install", "-q", "-r", "requirements.txt"], 600)
+            st["log"].append(f"$ pip install\n{out or 'ok'}")
+            code, out = run([sys.executable, "run_backtest.py", "--years", "6"], 1200)
+            st["log"].append(f"$ backtest\n{out[-1500:]}")
+            st["state"] = "restarting"
+            log.warning("update installed; exiting so the start_live loop restarts the new version")
+            time.sleep(3)
+            os._exit(0)
+
+        threading.Thread(target=job, daemon=True).start()
+        return self.update_state
+
     # ------------------------------------------------------------------ main step
     def _ensure_mt5(self) -> None:
         """Reconnect after the MetaTrader terminal restarts (its old IPC link is dead until initialize())."""
@@ -283,6 +583,7 @@ class Engine:
             return
         self.last_bar[symbol] = last
         ctx = Context(df, meta, self.cfg, daily)
+        self.last_ctx[symbol] = ctx
         sigs = []
         for s in self.strategies:
             try:
@@ -323,15 +624,17 @@ class Engine:
         if not ok:
             verdict.approved = False
             verdict.vetoes.append(why)
+        ok, why = self.learning_gate(row["strategy"])
+        if not ok:
+            verdict.approved = False
+            verdict.vetoes.append(why)
         decision = {"time": now.isoformat(), "symbol": sym, "strategy": row["strategy"],
                     "direction": row["direction"], "entry": row["entry"], "sl": row["sl"], "tp": row["tp"],
                     "prob": round(row["prob"], 3), "ev": round(row["ev"], 3), "approved": verdict.approved,
                     "debate": verdict.summary(), "ticket": None}
         if verdict.approved:
             sym_risk = for_symbol(self.cfg, sym)["risk"]
-            risk_pct = float(sym_risk["risk_per_trade_pct"])
-            if self.loss_streak >= int(sym_risk["halve_after_losses"]):
-                risk_pct /= 2
+            risk_money, size_notes = self.trade_risk(float(acc["balance"]), float(sym_risk["risk_per_trade_pct"]))
             if self.mt5 is not None:
                 try:  # fresh tick value (it moves for pairs whose quote currency isn't the account currency)
                     meta = mt5_symbol_meta(self.mt5, sym)
@@ -345,11 +648,16 @@ class Engine:
                     sl_dist = abs((tk.ask if sig.direction == 1 else tk.bid) - sig.sl)
                 except Exception:  # noqa: BLE001
                     pass
-            vol = lot_size(acc["balance"], risk_pct, sl_dist, meta.tick_size,
+            vol = lot_size(risk_money, 100.0, sl_dist, meta.tick_size,  # lots that lose risk_money at the stop
                            meta.tick_value, meta.volume_step, meta.volume_min, meta.volume_max)
+            note = "\n".join(size_notes)
+            if vol > 0:
+                vol, lev_note = self.cap_leverage(sym, vol, float(row["entry"]), float(acc.get("equity") or acc["balance"]))
+                note = "\n".join(x for x in (note, lev_note) if x)
             if vol <= 0:
                 decision["approved"] = False
-                decision["debate"] += "\nوتو: حجم محاسبه‌شده کمتر از حداقل لات بروکر است"
+                decision["debate"] += "\n" + (note if "وتو" in note else
+                                              f"وتو: با {risk_money:,.2f} دلار ریسک، حجم کمتر از حداقل لات بروکر می‌شود")
             else:
                 comment = f"asli {row['strategy']}"
                 try:
@@ -362,9 +670,11 @@ class Engine:
                         t = self.broker.market(sym, sig.direction, vol, round(sig.sl, meta.digits),
                                                round(sig.tp, meta.digits), comment)
                     decision["ticket"] = t
+                    if note:
+                        decision["debate"] += "\n" + note
                     self.trade_meta[str(t)] = {**{k: v for k, v in row.items() if k not in ("time",)},
                                                "opened": now.isoformat(), "volume": vol,
-                                               "risk_money": acc["balance"] * risk_pct / 100,
+                                               "risk_money": risk_money,
                                                "tp1": sig.tp1, "tp1_done": False, "order": sig.order,
                                                "max_hold_bars": sig.max_hold_bars,
                                                "valid_until": (now + timedelta(minutes=5 * sig.valid_bars)).isoformat()}
@@ -475,6 +785,12 @@ class Engine:
                             "top": self.learner.top_weights(6), "best_times": self.learner.best_times()[:10]},
                 "fundamental": self.fund.snapshot(self.cfg["symbols"]),
                 "auto_switch": {k: v for k, v in self.switch.items() if not k.startswith("_")},
+                "styles": self.styles_view(), "leverage": self.leverage_view(),
+                "risk": {**{k: self.cfg["risk"][k] for k in SETTING_BOUNDS},
+                         **{k: self.cfg["risk"].get(k, "auto") for k in MODE_KEYS}},
+                "sizing": self.sizing_view(),
+                "today": {"start_balance": self.day_start_balance, "pl": round(self.own_day_pl(), 2)},
+                "market_open": not market_closed(datetime.now(UTC)),
                 "time": datetime.now(UTC).isoformat(),
             }
 

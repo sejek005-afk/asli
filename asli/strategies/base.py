@@ -77,6 +77,12 @@ class Strategy:
     def generate(self, ctx: Context) -> list[Signal]:  # pragma: no cover - interface
         raise NotImplementedError
 
+    def explain(self, ctx: Context) -> dict | None:
+        """What this style is waiting for on the last closed bar (for the app's "brain" page)."""
+        if hasattr(self, "applies_to") and not self.applies_to(ctx.symbol):
+            return None
+        return {"state": "on", "text": "فعال است؛ با هر کندل ۵ دقیقه‌ای بررسی می‌کند", "levels": {}}
+
 
 def nearest_target(levels, entry: float, risk: float, direction: int, min_rr: float) -> float | None:
     """Closest liquidity level beyond entry that still pays at least min_rr."""

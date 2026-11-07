@@ -36,6 +36,16 @@ DEFAULTS: dict = {
         "risk_per_trade_pct": 0.5,
         "max_daily_loss_pct": 2.0,
         "max_open_positions": 2,
+        # real leverage cap: all open ASLI positions + pending orders together may be at most this many times
+        # the equity; a new order that would go above it is made smaller (or skipped below the minimum lot)
+        "max_leverage": 10.0,
+        # money the bot works with: "auto" = the whole account balance; "manual" = capital_usd (at most the balance)
+        "capital_mode": "auto",
+        "capital_usd": 0.0,
+        # money at risk per trade (lost if the stop is hit): "auto" = risk_per_trade_pct of that capital, halved
+        # after `halve_after_losses` losses in a row; "manual" = trade_risk_usd (at most 2% of the capital)
+        "trade_risk_mode": "auto",
+        "trade_risk_usd": 0.0,
         # "symbol": one ASLI position per symbol (all styles share it). "strategy": one per style and symbol,
         # so several styles can trade the same symbol (hedging accounts only; netting falls back to "symbol")
         "one_position_per": "symbol",
@@ -78,6 +88,10 @@ DEFAULTS: dict = {
                   "min_rr": 1.5, "max_sl_pips": 1500.0, "min_prob": 0.0, "min_ev_r": -9.0, "approve_margin": -99,
                   "auto_switch": True, "switch_lookback_days": 365, "switch_min_trades": 20},
     },
+    # live results vs the backtest's last 2 years, per style (see asli/brain.py): a style whose live average R is
+    # below its expectation by more than `drift_z` standard errors after `drift_min_trades` trades (and below 0)
+    # is paused until it is switched on again from the app
+    "learning": {"auto_pause_on_drift": True, "drift_min_trades": 20, "drift_z": 2.0},
     "fusion": {
         "min_prob": 0.40,
         "min_ev_r": 0.05,
