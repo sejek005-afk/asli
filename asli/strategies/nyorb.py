@@ -36,7 +36,8 @@ class NYOpeningRange(Strategy):
     def generate(self, ctx: Context) -> list[Signal]:
         if not self.applies_to(ctx.symbol):
             return []
-        p = self.p
+        # per-symbol settings: config symbol_overrides.<symbol>.strategies.nyorb (e.g. a 09:30 range for an index)
+        p = {**self.p, **(((ctx.cfg.get("strategies") or {}).get(self.name)) or {})}
         start = float(p.get("range_start_ny", 8.5))
         end = start + float(p.get("range_minutes", 30)) / 60.0
         until = float(p.get("entry_until_ny", 11.5))

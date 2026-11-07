@@ -283,7 +283,7 @@ def test_engine_reconnects_after_terminal_restart(monkeypatch):
     assert calls == ["shutdown", "connect"]
 
 
-def _orb_day_frame(break_up=True, days=60):
+def _orb_day_frame(break_up=True, days=60, jump_after=9.0):
     """Synthetic gold M5 bars: a quiet range 08:30-09:00 NY, then a clean break (prices rise over the days
     so the 50-day trend is up)."""
     idx = pd.date_range("2026-01-05 00:00", periods=days * 288, freq="5min", tz="UTC")
@@ -291,7 +291,7 @@ def _orb_day_frame(break_up=True, days=60):
     hc = ny.hour + (ny.minute + 5) / 60.0
     base = 2000 + np.arange(len(idx)) * 0.002
     px = base.copy()
-    after = (hc > 9.0) & (hc <= 11.0)
+    after = (hc > jump_after) & (hc <= 11.0)
     px = np.where(after, px + (6.0 if break_up else -6.0), px)
     df = pd.DataFrame({"open": px, "high": px + 1.0, "low": px - 1.0, "close": px, "spread": 0.2}, index=idx)
     return df
@@ -323,3 +323,18 @@ def test_nyorb_agent_is_advisory_but_safety_vetoes_hold():
     assert d.review(row).approved
     assert not d.review({**row, "news_blackout": {"title": "CPI", "cur": "USD", "impact": "High"}}).approved
     assert not d.review({**row, "sl_pips": 600}).approved
+
+
+def test_nyorb_reads_per_symbol_settings():
+    from asli.strategies.nyorb import NYOpeningRange
+    base = {**CFG["strategies"]["nyorb"], "enabled": True, "symbols": ["XAU", "SPX"]}
+    cfg = {**CFG, "strategies": {**CFG["strategies"], "nyorb": base},
+           "symbol_overrides": {"SPX": {"strategies": {"nyorb": {"range_start_ny": 9.5}}}}}
+    s = NYOpeningRange(base)
+    df = _orb_day_frame(break_up=True)
+    gold = s.generate(Context(df, SymbolMeta.guess("XAUUSD_o"), cfg))
+    spx = s.generate(Context(_orb_day_frame(break_up=True, jump_after=10.0), SymbolMeta("SPX", 1, 0.1, 0.1), cfg))
+    assert gold and spx
+    ny = lambda x: x.time.tz_convert("America/New_York")  # noqa: E731
+    assert all(ny(x).hour + ny(x).minute / 60 + 5 / 60 > 9.0 for x in gold)
+    assert all(ny(x).hour + ny(x).minute / 60 + 5 / 60 > 10.0 for x in spx)  # its range is 09:30-10:00
