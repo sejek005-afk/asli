@@ -17,6 +17,7 @@ from pathlib import Path
 import pandas as pd
 
 from .broker import lot_size, round_volume
+from .config import for_symbol
 from .data import mt5_recent, mt5_symbol_meta
 from .devil import DevilsAdvocate
 from .fundamental import Fundamentals
@@ -188,8 +189,9 @@ class Engine:
                     "prob": round(row["prob"], 3), "ev": round(row["ev"], 3), "approved": verdict.approved,
                     "debate": verdict.summary(), "ticket": None}
         if verdict.approved:
-            risk_pct = float(self.cfg["risk"]["risk_per_trade_pct"])
-            if self.loss_streak >= int(self.cfg["risk"]["halve_after_losses"]):
+            sym_risk = for_symbol(self.cfg, sym)["risk"]
+            risk_pct = float(sym_risk["risk_per_trade_pct"])
+            if self.loss_streak >= int(sym_risk["halve_after_losses"]):
                 risk_pct /= 2
             if self.mt5 is not None:
                 try:  # fresh tick value (it moves for pairs whose quote currency isn't the account currency)
