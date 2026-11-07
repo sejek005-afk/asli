@@ -11,7 +11,7 @@ mt5:
   login: 0            # demo account number
   password: ""        # better: leave empty and set environment variable ASLI_MT5_PASSWORD
   server: ""          # e.g. LiteFinance-MT5-Demo
-  server_time: auto   # auto | ny_plus_7 | fixed:2
+  server_time: auto   # auto | ny_plus_7 | eet (EU DST dates, e.g. LiteFinance) | fixed:2
 
 costs:                # used by the backtest (FX values; gold has its own defaults, see below)
   commission_pips: 0.7

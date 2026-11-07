@@ -18,13 +18,13 @@ import pandas as pd
 
 from .broker import lot_size, round_volume
 from .config import for_symbol
-from .data import mt5_recent, mt5_symbol_meta
+from .data import mt5_recent, mt5_symbol_meta, mt5_connect
 from .devil import DevilsAdvocate
 from .fundamental import Fundamentals
 from .fusion import annotate
 from .learner import Learner
 from .strategies import Context, build
-from .timeutil import NY, trading_day
+from .timeutil import EET, NY, trading_day
 
 log = logging.getLogger("asli.live")
 UTC = timezone.utc
@@ -40,6 +40,8 @@ def utc_to_server(t: datetime, mode: str) -> datetime:
         return t
     if mode.startswith("fixed:"):
         return t + timedelta(hours=float(mode.split(":", 1)[1]))
+    if mode == "eet":
+        return t.astimezone(EET).replace(tzinfo=None).replace(tzinfo=UTC)
     ny_wall = t.astimezone(NY).replace(tzinfo=None)  # ny_plus_7: server = New York wall clock + 7h
     return (ny_wall + timedelta(hours=7)).replace(tzinfo=UTC)
 
@@ -123,8 +125,33 @@ class Engine:
                 "loss_streak": self.loss_streak, "balance": acc["balance"], "equity": acc["equity"]}
 
     # ------------------------------------------------------------------ main step
+    def _ensure_mt5(self) -> None:
+        """Reconnect after the MetaTrader terminal restarts (its old IPC link is dead until initialize())."""
+        if self.mt5 is None:
+            return
+        try:
+            alive = self.mt5.terminal_info() is not None
+        except Exception:  # noqa: BLE001
+            alive = False
+        if alive:
+            return
+        now = time.time()
+        if now - getattr(self, "_reconnect_at", 0.0) < 30:
+            return
+        self._reconnect_at = now
+        try:
+            self.mt5.shutdown()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            mt5_connect(self.cfg)
+            log.warning("MetaTrader connection was lost; reconnected")
+        except Exception as exc:  # noqa: BLE001
+            log.error("MetaTrader reconnect failed: %s", exc)
+
     def step(self) -> None:
         with self.lock:
+            self._ensure_mt5()
             self.fund.refresh()
             self._learn_from_closed()
             for symbol in self.cfg["symbols"]:

@@ -21,7 +21,8 @@ DEFAULTS: dict = {
         "login": 0,
         "password": "",  # or set env ASLI_MT5_PASSWORD
         "server": "",
-        # broker server clock: "auto" | "ny_plus_7" (EET with NY-close DST, most ECN brokers) | "fixed:<hours>"
+        # broker server clock: "auto" | "ny_plus_7" (EET with NY-close DST) | "eet" (EET with EU DST dates,
+        # e.g. LiteFinance) | "fixed:<hours>"
         "server_time": "auto",
         "magic": 26110601,
         "deviation_points": 20,
@@ -66,12 +67,15 @@ DEFAULTS: dict = {
     "fundamental": {
         "enabled": True,
         "calendar_url": "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+        "tradingview_calendar": True,  # second, independent calendar (ForexFactory rate-limits with 429)
         "calendar_refresh_min": 60,
+        "calendar_stale_hours": 3,
         "blackout_high_min": 30,
         "blackout_medium_min": 10,
-        "news_feeds": [
-            "https://www.fxstreet.com/rss/news",
+        "news_feeds": [  # fxstreet.com answers 403 to servers, so it was dropped
+            "https://investinglive.com/feed/news",
             "https://www.investing.com/rss/news_1.rss",
+            "https://www.investing.com/rss/commodities.rss",
         ],
         "news_refresh_min": 15,
         "news_halflife_hours": 6,

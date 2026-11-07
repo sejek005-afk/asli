@@ -13,6 +13,7 @@ import pandas as pd
 
 NY = ZoneInfo("America/New_York")
 LONDON = ZoneInfo("Europe/London")
+EET = ZoneInfo("Europe/Athens")  # UTC+2 winter / UTC+3 summer with EU daylight-saving dates
 TEHRAN = ZoneInfo("Asia/Tehran")
 UTC = timezone.utc
 
@@ -35,6 +36,8 @@ def server_naive_to_utc(index: pd.DatetimeIndex, mode: str) -> pd.DatetimeIndex:
     """Convert a naive broker-server-time index to tz-aware UTC.
 
     mode: "ny_plus_7" — server clock = New York local + 7h (EET with US DST, used by most ECN brokers)
+          "eet"       — server clock = Eastern European Time with EU DST dates (e.g. LiteFinance). Differs
+                        from ny_plus_7 by 1 h for ~5 weeks a year, when US and EU clocks change on different days
           "fixed:<h>" — server clock = UTC + h hours (h may be negative / fractional)
           "utc"       — already UTC
     """
@@ -45,6 +48,8 @@ def server_naive_to_utc(index: pd.DatetimeIndex, mode: str) -> pd.DatetimeIndex:
     if mode.startswith("fixed:"):
         h = float(mode.split(":", 1)[1])
         return (index - pd.Timedelta(hours=h)).tz_localize(UTC)
+    if mode == "eet":
+        return index.tz_localize(EET, ambiguous="NaT", nonexistent="shift_forward").tz_convert(UTC)
     if mode == "ny_plus_7":
         ny_naive = index - pd.Timedelta(hours=7)
         loc = ny_naive.tz_localize(NY, ambiguous="NaT", nonexistent="shift_forward")
