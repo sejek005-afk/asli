@@ -153,3 +153,30 @@ def test_limit_that_hits_entry_and_stop_in_one_bar_is_a_loss():
     s = Signal(i, df.index[i], "EURUSD", "t", 1, "limit", entry, sl, entry + 3 * (entry - sl), valid_bars=1)
     t = bt.simulate(s, c)
     assert t is not None and t.r < -0.9
+
+
+def test_gold_gets_its_own_stop_range_and_costs():
+    from asli.config import for_symbol
+    g = for_symbol(CFG, "XAUUSD_o")
+    assert g["risk"]["max_sl_pips"] == 100.0 and g["costs"]["commission_pips"] == 2.0
+    assert for_symbol(CFG, "EURUSD") is CFG  # FX untouched
+    cfg = {**CFG, "symbol_overrides": {"XAUUSD_o": {"risk": {"max_sl_pips": 80}}}}
+    assert for_symbol(cfg, "XAUUSD_o")["risk"]["max_sl_pips"] == 80
+    assert Context(synthetic(days=30, seed=5), SymbolMeta.guess("XAUUSD_o"), CFG).cfg["risk"]["max_sl_pips"] == 100.0
+
+
+def test_devil_uses_symbol_stop_limits():
+    d = DevilsAdvocate(CFG)
+    base = {"direction": 1, "rr": 2.5, "sl_pips": 60, "spread_pips": 3, "prob": 0.6, "ev": 0.4, "bias_align": 1,
+            "trend_align": 1, "confluence": 2, "opposition": 0, "killzone": True, "key_level": True, "pd_align": 0.5,
+            "hour_edge": 0.1}
+    assert not d.review({**base, "symbol": "EURUSD"}).approved  # 60 FX pips > 25
+    assert d.review({**base, "symbol": "XAUUSD_o"}).approved  # $6 gold stop is normal
+    assert not d.review({**base, "symbol": "XAUUSD_o", "sl_pips": 5}).approved  # $0.5 is too tight
+
+
+def test_server_clock_not_guessed_on_weekend():
+    from asli.data import market_closed
+    assert market_closed(datetime(2026, 11, 7, 12, 0))  # Saturday
+    assert market_closed(datetime(2026, 11, 6, 21, 0))  # Friday after close
+    assert not market_closed(datetime(2026, 11, 9, 10, 0))  # Monday

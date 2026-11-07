@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 
+from .config import for_symbol
+
 
 @dataclass
 class Verdict:
@@ -43,21 +45,32 @@ class DevilsAdvocate:
         self.min_rr, self.min_sl, self.max_sl = float(r["min_rr"]), float(r["min_sl_pips"]), float(r["max_sl_pips"])
         self.max_open = int(r["max_open_positions"])
         self.max_daily = float(r["max_daily_loss_pct"])
+        self._limits: dict[str, tuple[float, float, float]] = {}
+
+    def limits(self, symbol: str | None) -> tuple[float, float, float]:
+        """(min_rr, min_sl_pips, max_sl_pips) for this symbol (gold has its own stop range)."""
+        if not symbol:
+            return self.min_rr, self.min_sl, self.max_sl
+        if symbol not in self._limits:
+            r = for_symbol(self.cfg, symbol)["risk"]
+            self._limits[symbol] = (float(r["min_rr"]), float(r["min_sl_pips"]), float(r["max_sl_pips"]))
+        return self._limits[symbol]
 
     def review(self, c: dict, account: dict | None = None) -> Verdict:
         account = account or {}
         v = Verdict(False, 0.0, 0.0)
         d = c.get("direction", 0)
         side = "خرید" if d == 1 else "فروش"
+        min_rr, min_sl, max_sl = self.limits(c.get("symbol"))
 
         # ------------------------------------------------------------ hard vetoes
-        if c.get("rr", 0) < self.min_rr * (0.75 if c.get("tp1") else 1.0):
-            v.vetoes.append(f"ریسک به ریوارد {c.get('rr', 0):.2f} کمتر از حداقل {self.min_rr} است")
+        if c.get("rr", 0) < min_rr * (0.75 if c.get("tp1") else 1.0):
+            v.vetoes.append(f"ریسک به ریوارد {c.get('rr', 0):.2f} کمتر از حداقل {min_rr} است")
         sl_p = c.get("sl_pips", 0)
-        if sl_p < self.min_sl:
+        if sl_p < min_sl:
             v.vetoes.append(f"استاپ {sl_p:.1f} پیپ است؛ با اسپرد و کمیسیون، این معامله از اول بازنده است")
-        if sl_p > self.max_sl:
-            v.vetoes.append(f"استاپ {sl_p:.1f} پیپ بیشتر از سقف {self.max_sl} پیپ است")
+        if sl_p > max_sl:
+            v.vetoes.append(f"استاپ {sl_p:.1f} پیپ بیشتر از سقف {max_sl} پیپ است")
         ev = c.get("news_blackout")
         if ev:
             v.vetoes.append(f"خبر {ev.get('impact')} «{ev.get('title')}» برای {ev.get('cur')} در بازه‌ی ممنوعه است")

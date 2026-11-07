@@ -4,7 +4,7 @@
 mode: demo            # demo = only trades a DEMO account | real = allowed on a real account (also needs allow_real)
 allow_real: false     # second safety switch for real money
 
-symbols: [EURUSD, GBPUSD]   # exact names as shown in your MT5 Market Watch (e.g. EURUSD.ecn)
+symbols: [EURUSD, GBPUSD, XAUUSD]   # exact names as shown in your MT5 Market Watch (e.g. EURUSD.ecn, XAUUSD_o)
 
 mt5:
   path: ""            # path to terminal64.exe of the MT5 used by the bot; empty = default install
@@ -13,7 +13,7 @@ mt5:
   server: ""          # e.g. LiteFinance-MT5-Demo
   server_time: auto   # auto | ny_plus_7 | fixed:2
 
-costs:                # used by the backtest
+costs:                # used by the backtest (FX values; gold has its own defaults, see below)
   commission_pips: 0.7
   slippage_pips: 0.2
 
@@ -21,6 +21,13 @@ risk:
   risk_per_trade_pct: 0.5
   max_daily_loss_pct: 2.0
   max_open_positions: 2
+
+# Gold (XAU...) automatically gets its own stop range and costs (stop 10-100 pips = $1-$10,
+# commission 2 pips, slippage 1 pip). Change them per symbol here if your broker differs:
+# symbol_overrides:
+#   XAUUSD_o:
+#     risk: {min_sl_pips: 10, max_sl_pips: 120}
+#     costs: {commission_pips: 1.5}
 
 server:
   port: 8787

@@ -69,7 +69,41 @@ DEFAULTS: dict = {
     },
     "server": {"host": "0.0.0.0", "port": 8787, "token": "change-me"},
     "paths": {"data": "data", "state": "state", "reports": "reports"},
+    # per-symbol changes to costs / risk / strategies, keyed by the exact MT5 name, e.g.
+    # symbol_overrides: {XAUUSD_o: {risk: {max_sl_pips: 120}}}
+    "symbol_overrides": {},
 }
+
+# Defaults by asset class, applied before symbol_overrides. Pips are meta.pip (gold: 0.1 = 10 cents),
+# so the FX numbers above would cap a gold stop at $2.5 and veto nearly every gold setup.
+ASSET_CLASS_DEFAULTS: dict = {
+    "XAU": {
+        "costs": {"default_spread_pips": 3.0, "commission_pips": 2.0, "slippage_pips": 1.0},
+        "risk": {"min_sl_pips": 10.0, "max_sl_pips": 100.0},
+    },
+}
+
+
+def asset_class(symbol: str) -> str | None:
+    n = str(symbol).upper()
+    for prefix in ASSET_CLASS_DEFAULTS:
+        if n.startswith(prefix):
+            return prefix
+    return None
+
+
+def for_symbol(cfg: dict, symbol: str) -> dict:
+    """The config as seen by one symbol: asset-class defaults, then config symbol_overrides[symbol]."""
+    cls = asset_class(symbol)
+    ov = (cfg.get("symbol_overrides") or {}).get(symbol)
+    if not cls and not ov:
+        return cfg
+    out = cfg
+    if cls:
+        out = _merge(out, ASSET_CLASS_DEFAULTS[cls])
+    if ov:
+        out = _merge(out, ov)
+    return out
 
 
 def _merge(base: dict, override: dict) -> dict:

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+from ..config import for_symbol
 from ..data import SymbolMeta
 from ..features import DailyContext, atr
 
@@ -49,6 +50,7 @@ class Context:
     def __init__(self, df: pd.DataFrame, meta: SymbolMeta, cfg: dict, daily: pd.DataFrame | None = None):
         self.df = df
         self.meta = meta
+        cfg = for_symbol(cfg, meta.name)  # gold etc. get their own stop limits and costs
         self.cfg = cfg
         self.symbol = meta.name
         self.atr = atr(df, 14)

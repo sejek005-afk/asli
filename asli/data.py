@@ -80,6 +80,12 @@ def mt5_symbol_meta(mt5, symbol: str) -> SymbolMeta:
     )
 
 
+def market_closed(utc_now: datetime) -> bool:
+    """FX weekend in UTC, padded by 2h either side: Friday 20:00 -> Sunday 23:59."""
+    wd, h = utc_now.weekday(), utc_now.hour
+    return wd == 5 or (wd == 4 and h >= 20) or wd == 6
+
+
 def detect_server_time_mode(mt5, symbol: str) -> str:
     """Compare the last tick's server timestamp with real UTC to find the broker clock."""
     tick = mt5.symbol_info_tick(symbol)
@@ -87,8 +93,9 @@ def detect_server_time_mode(mt5, symbol: str) -> str:
         return "ny_plus_7"
     server_now = datetime.utcfromtimestamp(tick.time)  # naive server clock
     real_utc = datetime.utcnow()
-    if abs((real_utc - server_now).total_seconds()) > 6 * 3600 + 86400:
-        return "ny_plus_7"  # stale tick (weekend): use the most common convention
+    if market_closed(real_utc) or abs((real_utc - server_now).total_seconds()) > 14 * 3600:
+        # weekend: the last tick is Friday's close, so the gap says nothing about the broker clock
+        return "ny_plus_7"
     offset_h = round((server_now - real_utc).total_seconds() / 1800) / 2  # nearest half hour
     ny_off = datetime.now(NY).utcoffset().total_seconds() / 3600
     if abs(offset_h - (ny_off + 7)) < 0.01:
