@@ -221,3 +221,63 @@ def test_style_can_set_its_own_debate_margin_and_skip_learner_vetoes():
     assert not d.review({**row, "news_blackout": {"title": "CPI", "cur": "USD", "impact": "High"}}).approved
     cfg = {**CFG, "strategies": {**CFG["strategies"], "scalp": {**CFG["strategies"]["scalp"], "approve_margin": 9}}}
     assert not DevilsAdvocate(cfg).review(row).approved
+
+
+def test_server_time_eet_follows_eu_dst_dates():
+    idx = pd.DatetimeIndex([pd.Timestamp("2026-01-15 10:00"), pd.Timestamp("2026-07-15 10:00"),
+                            pd.Timestamp("2026-03-16 10:00")])  # 16 Mar: US already on summer time, EU not yet
+    u = server_naive_to_utc(idx, "eet")
+    assert list(u) == [pd.Timestamp("2026-01-15 08:00", tz="UTC"), pd.Timestamp("2026-07-15 07:00", tz="UTC"),
+                       pd.Timestamp("2026-03-16 08:00", tz="UTC")]
+    assert server_naive_to_utc(idx[2:], "ny_plus_7")[0] == pd.Timestamp("2026-03-16 07:00", tz="UTC")  # 1 h off
+    from asli.live import utc_to_server
+    for t in u:
+        s = utc_to_server(t.to_pydatetime(), "eet")
+        assert server_naive_to_utc(pd.DatetimeIndex([pd.Timestamp(s.replace(tzinfo=None))]), "eet")[0] == t
+
+
+def test_two_calendars_merge_and_go_stale(tmp_path):
+    import time as _time
+    f = Fundamentals(CFG, str(tmp_path))
+    f._ff = Fundamentals._parse_calendar([{"date": "2026-11-13T08:30:00-05:00", "country": "USD", "impact": "High",
+                                           "title": "CPI m/m"}])
+    f._tv = Fundamentals._parse_tradingview({"status": "ok", "result": [
+        {"date": "2026-11-12T19:00:00.000Z", "currency": "USD", "importance": 1, "title": "Fed Chair Speech"},
+        {"date": "2026-11-13T13:30:00.000Z", "currency": "USD", "importance": 1, "title": "CPI m/m"},
+        {"date": "2026-11-13T10:00:00.000Z", "currency": "EUR", "importance": -1, "title": "ZEW"}]})
+    f._merge()
+    assert len(f.events) == 3  # the CPI in both feeds is kept once
+    t = datetime(2026, 11, 12, 19, 20, tzinfo=timezone.utc)
+    assert f.blackout("XAUUSD_o", t)["title"] == "Fed Chair Speech"  # only TradingView had it
+    assert f.blackout("XAUUSD_o", datetime(2026, 11, 13, 13, 45, tzinfo=timezone.utc)) is not None
+    f.ok_at = {"tradingview": _time.time()}
+    assert f.calendar_ok
+    f.ok_at = {"forexfactory": _time.time() - 5 * 3600}
+    assert not f.calendar_ok  # nothing answered for 5 h: news risk unknown, not "all clear"
+
+
+def test_rss_dates_from_investing_feeds():
+    from asli.fundamental import _parse_pubdate
+    assert _parse_pubdate("2026-11-06 22:48:20") == datetime(2026, 11, 6, 22, 48, 20, tzinfo=timezone.utc)
+    assert _parse_pubdate("Nov 06, 2026 20:56 GMT") == datetime(2026, 11, 6, 20, 56, tzinfo=timezone.utc)
+    assert _parse_pubdate("Fri, 06 Nov 2026 21:52:39 GMT") == datetime(2026, 11, 6, 21, 52, 39, tzinfo=timezone.utc)
+
+
+def test_engine_reconnects_after_terminal_restart(monkeypatch):
+    import asli.live as live
+    calls = []
+
+    class FakeMT5:
+        def terminal_info(self):
+            return None
+
+        def shutdown(self):
+            calls.append("shutdown")
+
+    monkeypatch.setattr(live, "mt5_connect", lambda cfg: calls.append("connect"))
+    eng = live.Engine.__new__(live.Engine)
+    eng.mt5, eng.cfg = FakeMT5(), CFG
+    eng._ensure_mt5()
+    assert calls == ["shutdown", "connect"]
+    eng._ensure_mt5()  # throttled: no second attempt within 30 s
+    assert calls == ["shutdown", "connect"]

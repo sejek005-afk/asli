@@ -1,7 +1,10 @@
 """Fundamentals: economic calendar (blackouts + event risk) and live news headline sentiment.
 
-- Calendar: ForexFactory weekly JSON feed. High-impact events block new trades on the affected
-  currencies for +-30 min (configurable), medium for +-10 min; upcoming high impact raises `news_risk`.
+- Calendar: two independent sources merged — ForexFactory's weekly JSON feed and TradingView's economic
+  calendar — so one being rate-limited (ForexFactory answers 429 when polled too often) or down does not
+  leave the bot blind. High-impact events block new trades on the affected currencies for +-30 min
+  (configurable), medium for +-10 min; upcoming high impact raises `news_risk`. If no source has answered
+  for `calendar_stale_hours`, the calendar counts as unknown (the opposing agent then argues for caution).
 - News: RSS headlines scored with a small hawkish/dovish + risk lexicon per currency, decaying with a
   half-life. `bias(symbol)` = score(base) - score(quote) in [-1, 1]. A crude but transparent signal:
   the opposing agent uses it as an argument, never as a trade trigger.
@@ -43,15 +46,43 @@ RISK_OFF = ["war", "attack", "missile", "invasion", "crisis", "default", "panic"
 SAFE_HAVENS = {"JPY": 1.0, "CHF": 1.0, "XAU": 1.0, "USD": 0.5}
 
 
-def _get(url: str, timeout: float = 15.0) -> bytes | None:
+_WARNED: dict[str, float] = {}
+
+
+def _warn_once(url: str, msg: str, *args) -> None:
+    """Same failing URL is reported at most every 6 hours (a dead feed used to log every 15 minutes)."""
+    if time.time() - _WARNED.get(url, 0.0) > 6 * 3600:
+        _WARNED[url] = time.time()
+        log.warning(msg, *args)
+
+
+def _get(url: str, timeout: float = 15.0, headers: dict | None = None) -> bytes | None:
     try:
         import requests
-        r = requests.get(url, headers=UA, timeout=timeout)
+        r = requests.get(url, headers={**UA, **(headers or {})}, timeout=timeout)
         if r.status_code == 200:
+            _WARNED.pop(url, None)
             return r.content
-        log.warning("GET %s -> %s", url, r.status_code)
+        _warn_once(url, "GET %s -> %s", url, r.status_code)
     except Exception as exc:  # noqa: BLE001
-        log.warning("GET %s failed: %s", url, exc)
+        _warn_once(url, "GET %s failed: %s", url, exc)
+    return None
+
+
+def _parse_pubdate(pub: str) -> datetime | None:
+    pub = (pub or "").strip()
+    if not pub:
+        return None
+    try:
+        from email.utils import parsedate_to_datetime
+        return parsedate_to_datetime(pub).astimezone(UTC)
+    except Exception:  # noqa: BLE001
+        pass
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%b %d, %Y %H:%M GMT"):  # investing.com feeds (GMT)
+        try:
+            return datetime.strptime(pub, fmt).replace(tzinfo=UTC)
+        except ValueError:
+            continue
     return None
 
 
@@ -64,19 +95,44 @@ class Fundamentals:
     def __init__(self, cfg: dict, state_dir: str):
         self.cfg = cfg["fundamental"]
         self.enabled = bool(self.cfg.get("enabled", True))
-        self.cache = Path(state_dir) / "calendar.json"
+        self.state = Path(state_dir)
+        self.cache = self.state / "calendar.json"  # ForexFactory raw feed
+        self.cache_tv = self.state / "calendar_tv.json"  # TradingView raw feed
         self.events: list[dict] = []
+        self._ff: list[dict] = []
+        self._tv: list[dict] = []
+        self.ok_at: dict[str, float] = {}  # source -> unix time of the last successful fetch
         self.headlines: list[dict] = []  # {t, title, scores{cur: s}, risk_off}
         self._cal_at = 0.0
         self._news_at = 0.0
-        self.calendar_ok = False
         self.news_ok = False
-        if self.cache.exists():
-            try:
-                self.events = self._parse_calendar(json.loads(self.cache.read_text(encoding="utf-8")))
-                self.calendar_ok = bool(self.events)
-            except Exception:  # noqa: BLE001
-                pass
+        for src, path in (("forexfactory", self.cache), ("tradingview", self.cache_tv)):
+            if path.exists():
+                try:
+                    raw = json.loads(path.read_text(encoding="utf-8"))
+                    if src == "forexfactory":
+                        self._ff = self._parse_calendar(raw)
+                    else:
+                        self._tv = self._parse_tradingview(raw)
+                    self.ok_at[src] = path.stat().st_mtime
+                except Exception:  # noqa: BLE001
+                    pass
+        self._merge()
+
+    @property
+    def calendar_ok(self) -> bool:
+        """At least one calendar source answered within `calendar_stale_hours` (cached copies count by age)."""
+        limit = 3600 * float(self.cfg.get("calendar_stale_hours", 3))
+        return bool(self.events) and any(time.time() - t <= limit for t in self.ok_at.values())
+
+    def _merge(self) -> None:
+        seen, out = set(), []
+        for e in sorted(self._ff + self._tv, key=lambda x: x["t"]):
+            key = (e["cur"], e["t"], e["title"].lower())
+            if key not in seen:
+                seen.add(key)
+                out.append(e)
+        self.events = out
 
     # ------------------------------------------------------------------ calendar
     @staticmethod
@@ -88,8 +144,62 @@ class Fundamentals:
             except Exception:  # noqa: BLE001
                 continue
             out.append({"t": t, "cur": str(e.get("country", "")).upper(), "impact": str(e.get("impact", "")),
-                        "title": str(e.get("title", "")), "forecast": e.get("forecast"), "previous": e.get("previous")})
+                        "title": str(e.get("title", "")), "forecast": e.get("forecast"), "previous": e.get("previous"),
+                        "src": "forexfactory"})
         return sorted(out, key=lambda x: x["t"])
+
+    @staticmethod
+    def _parse_tradingview(raw) -> list[dict]:
+        items = raw.get("result", []) if isinstance(raw, dict) else (raw or [])
+        imp = {1: "High", 0: "Medium", -1: "Low"}
+        out = []
+        for e in items:
+            try:
+                t = datetime.fromisoformat(str(e["date"]).replace("Z", "+00:00")).astimezone(UTC)
+            except Exception:  # noqa: BLE001
+                continue
+            out.append({"t": t, "cur": str(e.get("currency") or "").upper(), "impact": imp.get(e.get("importance"), "Low"),
+                        "title": str(e.get("title", "")), "forecast": e.get("forecast"), "previous": e.get("previous"),
+                        "src": "tradingview"})
+        return sorted(out, key=lambda x: x["t"])
+
+    def _fetch_calendars(self) -> None:
+        urls = list(self.cfg.get("calendar_urls") or [])
+        if self.cfg.get("calendar_url") and self.cfg["calendar_url"] not in urls:
+            urls.insert(0, self.cfg["calendar_url"])
+        ff: list[dict] = []
+        ff_raw: list = []
+        for url in urls:
+            raw = _get(url)
+            if raw:
+                try:
+                    data = json.loads(raw)
+                    ff_raw += data
+                    ff += self._parse_calendar(data)
+                except Exception as exc:  # noqa: BLE001
+                    _warn_once(url, "calendar parse failed: %s", exc)
+        if ff:
+            self._ff = ff
+            self.ok_at["forexfactory"] = time.time()
+            self.cache.write_text(json.dumps(ff_raw), encoding="utf-8")
+        if self.cfg.get("tradingview_calendar", True):
+            now = datetime.now(UTC)
+            url = (str(self.cfg.get("tradingview_url", "https://economic-calendar.tradingview.com/events"))
+                   + f"?from={(now - timedelta(days=1)):%Y-%m-%dT00:00:00.000Z}"
+                   + f"&to={(now + timedelta(days=8)):%Y-%m-%dT00:00:00.000Z}"
+                   + "&countries=" + str(self.cfg.get("tradingview_countries", "US,EU,GB,JP,CN,CH,CA,AU,NZ")))
+            raw = _get(url, headers={"Origin": "https://www.tradingview.com", "Referer": "https://www.tradingview.com/"})
+            if raw:
+                try:
+                    data = json.loads(raw)
+                    tv = self._parse_tradingview(data)
+                    if tv:
+                        self._tv = tv
+                        self.ok_at["tradingview"] = time.time()
+                        self.cache_tv.write_text(json.dumps(data), encoding="utf-8")
+                except Exception as exc:  # noqa: BLE001
+                    _warn_once(url, "tradingview calendar parse failed: %s", exc)
+        self._merge()
 
     def refresh(self, force: bool = False) -> None:
         if not self.enabled:
@@ -97,15 +207,7 @@ class Fundamentals:
         now = time.time()
         if force or now - self._cal_at > 60 * float(self.cfg.get("calendar_refresh_min", 60)):
             self._cal_at = now
-            raw = _get(self.cfg["calendar_url"])
-            if raw:
-                try:
-                    data = json.loads(raw)
-                    self.events = self._parse_calendar(data)
-                    self.cache.write_text(json.dumps(data), encoding="utf-8")
-                    self.calendar_ok = True
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("calendar parse failed: %s", exc)
+            self._fetch_calendars()
         if force or now - self._news_at > 60 * float(self.cfg.get("news_refresh_min", 15)):
             self._news_at = now
             got = False
@@ -154,12 +256,7 @@ class Fundamentals:
             title = (item.findtext("title") or "").strip()
             if not title or title in seen:
                 continue
-            pub = item.findtext("pubDate") or ""
-            try:
-                from email.utils import parsedate_to_datetime
-                t = parsedate_to_datetime(pub).astimezone(UTC)
-            except Exception:  # noqa: BLE001
-                t = datetime.now(UTC)
+            t = _parse_pubdate(item.findtext("pubDate") or "") or datetime.now(UTC)
             self.headlines.append(self.score_headline(title, t))
 
     @staticmethod
@@ -208,6 +305,7 @@ class Fundamentals:
               and e["impact"] in ("High", "Medium")]
         return {
             "calendar_ok": self.calendar_ok, "news_ok": self.news_ok,
+            "calendar_sources": {src: datetime.fromtimestamp(t, UTC).isoformat() for src, t in self.ok_at.items()},
             "upcoming": [{"time": e["t"].isoformat(), "cur": e["cur"], "impact": e["impact"], "title": e["title"]}
                          for e in up[:20]],
             "bias": {s: round(self.bias(s, now), 2) for s in symbols},
