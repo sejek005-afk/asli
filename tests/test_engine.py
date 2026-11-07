@@ -180,3 +180,33 @@ def test_server_clock_not_guessed_on_weekend():
     assert market_closed(datetime(2026, 11, 7, 12, 0))  # Saturday
     assert market_closed(datetime(2026, 11, 6, 21, 0))  # Friday after close
     assert not market_closed(datetime(2026, 11, 9, 10, 0))  # Monday
+
+
+def test_gold_scalp_only_on_gold_and_signals_are_valid():
+    from asli.strategies.scalp import GoldScalp
+    s = GoldScalp(CFG["strategies"]["scalp"])
+    df = synthetic(days=60, seed=7)
+    assert s.generate(Context(df, SymbolMeta.guess("EURUSD"), CFG)) == []
+    gold = df.copy()
+    gold[["open", "high", "low", "close", "spread"]] *= 3500.0
+    sig = s.generate(Context(gold, SymbolMeta.guess("XAUUSD_o"), CFG))
+    assert sig
+    for x in sig:
+        assert x.strategy == "scalp" and x.order == "market" and x.max_hold_bars == 48
+        assert (x.tp - x.entry) * x.direction > 0 and (x.entry - x.sl) * x.direction > 0
+        assert abs(x.rr - 0.75 / 4.0) < 1e-6
+
+
+def test_devil_lets_scalp_use_its_own_limits():
+    d = DevilsAdvocate(CFG)
+    row = {"symbol": "XAUUSD_o", "strategy": "scalp", "direction": 1, "rr": 0.19, "sl_pips": 177, "spread_pips": 2.2,
+           "prob": 0.88, "ev": 0.03, "bias_align": 1, "trend_align": 1, "confluence": 0, "opposition": 0,
+           "killzone": True, "key_level": False, "pd_align": 0.0, "hour_edge": 0.05}
+    assert d.review(row).approved
+    v = d.review({**row, "strategy": "lit"})  # the same numbers fail the normal limits
+    assert not v.approved and len(v.vetoes) >= 3
+
+
+def test_learner_knows_the_scalp_style():
+    from asli.learner import feature_names
+    assert "s_scalp" in feature_names()

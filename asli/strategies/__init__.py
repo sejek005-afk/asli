@@ -3,6 +3,7 @@ from .crt import CandleRangeTheory
 from .ict import ICTModel2022
 from .lit import LITInducement
 from .orb import OpeningRangeBreakout
+from .scalp import GoldScalp
 from .trendline import TrendlineLiquidity
 
 ALL = {
@@ -11,6 +12,7 @@ ALL = {
     "trendline": TrendlineLiquidity,
     "crt": CandleRangeTheory,
     "orb": OpeningRangeBreakout,
+    "scalp": GoldScalp,
 }
 
 
