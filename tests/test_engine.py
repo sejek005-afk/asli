@@ -338,3 +338,107 @@ def test_nyorb_reads_per_symbol_settings():
     ny = lambda x: x.time.tz_convert("America/New_York")  # noqa: E731
     assert all(ny(x).hour + ny(x).minute / 60 + 5 / 60 > 9.0 for x in gold)
     assert all(ny(x).hour + ny(x).minute / 60 + 5 / 60 > 10.0 for x in spx)  # its range is 09:30-10:00
+
+
+def _staircase(days=80, step=3.0, drop_day=None):
+    """Synthetic gold M5: flat, then a jump of `step` every day at 10:00 NY (an hourly channel breakout);
+    optionally a large intraday drop on `drop_day` (a breakout against the daily trend)."""
+    idx = pd.date_range("2026-01-05 00:00", periods=days * 288, freq="5min", tz="UTC")
+    ny = idx.tz_convert("America/New_York")
+    day = np.asarray(pd.Index(trading_day(idx)).astype(str))
+    k = pd.Series(day).rank(method="dense").values - 1  # day number
+    px = 2000.0 + step * (k + ((ny.hour >= 10) & (ny.hour < 17)))
+    if drop_day is not None:
+        px = np.where((k == drop_day) & (ny.hour >= 12) & (ny.hour < 17), px - 200.0, px)
+    return pd.DataFrame({"open": px, "high": px + 0.5, "low": px - 0.5, "close": px, "spread": 0.2}, index=idx)
+
+
+def test_hourly_channel_breakout_style():
+    from asli.strategies.donch import HourlyChannelBreakout
+    p = {**CFG["strategies"]["donch"], "enabled": True}
+    s = HourlyChannelBreakout(p)
+    up = _staircase()
+    assert s.generate(Context(up, SymbolMeta.guess("EURUSD"), CFG)) == []  # gold only
+    sig = s.generate(Context(up, SymbolMeta.guess("XAUUSD_o"), CFG))
+    assert sig and all(x.direction == 1 for x in sig)
+    for x in sig:
+        close = x.time + pd.Timedelta(minutes=5)
+        assert close.minute == 0  # decided when an hourly candle closes
+        h = close.tz_convert("America/New_York").hour
+        assert not 16 <= h < 18
+        assert abs(x.rr - 2.0) < 1e-9 and x.sl < x.entry < x.tp and x.max_hold_bars == 48 * 12
+    down = s.generate(Context(_staircase(step=-3.0), SymbolMeta.guess("XAUUSD_o"), CFG))
+    assert down and all(x.direction == -1 for x in down)
+    # a crash through the channel while the 50-day trend is up: skipped with the trend filter only
+    crash = _staircase(days=75, drop_day=70)
+    with_trend = [x for x in s.generate(Context(crash, SymbolMeta.guess("XAUUSD_o"), CFG)) if x.direction == -1]
+    p2 = {**p, "with_daily_trend": False}
+    cfg2 = {**CFG, "strategies": {**CFG["strategies"], "donch": p2}}
+    no_trend = HourlyChannelBreakout(p2).generate(Context(crash, SymbolMeta.guess("XAUUSD_o"), cfg2))
+    assert with_trend == [] and any(x.direction == -1 for x in no_trend)
+
+
+def test_auto_switch_follows_the_styles_own_recent_result(monkeypatch, tmp_path):
+    import asli.live as live
+    from asli.strategies.base import Strategy
+
+    class Fake(Strategy):
+        """Every day at 09:00 NY: the 10:00 jump (+3) hits the target of a long, the stop of a short."""
+        def __init__(self, name, d):
+            super().__init__({"auto_switch": True, "switch_lookback_days": 30, "switch_min_trades": 5})
+            self.name, self.d = name, d
+
+        def generate(self, ctx):
+            ny = ctx.df.index.tz_convert("America/New_York")
+            out = []
+            for i in np.flatnonzero((ny.hour == 8) & (ny.minute == 55)):
+                e = float(ctx.df["close"].values[i])
+                d = self.d
+                sl, tp = (e - 10, e + 2) if d == 1 else (e + 2, e - 10)
+                out.append(Signal(bar=int(i), time=ctx.df.index[i], symbol=ctx.symbol, strategy=self.name, direction=d,
+                                  order="market", entry=e, sl=sl, tp=tp, valid_bars=1, max_hold_bars=24))
+            return out
+
+    df = _staircase(days=60)
+    now = df.index[-1] + pd.Timedelta(minutes=10)
+    monkeypatch.setattr(live.pd.Timestamp, "now", classmethod(lambda cls, tz=None: now))
+    monkeypatch.setattr(live, "mt5_history", lambda *a, **k: df)
+    monkeypatch.setattr(live, "mt5_recent", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no D1")))
+    eng = live.Engine.__new__(live.Engine)
+    eng.cfg = {**CFG, "symbols": ["XAUUSD_o"]}
+    eng.mt5 = object()
+    eng.time_mode = "utc"
+    eng.state_dir = tmp_path
+    eng.metas = {"XAUUSD_o": SymbolMeta.guess("XAUUSD_o")}
+    eng.switch = {}
+    eng.strategies = [Fake("winner", 1), Fake("loser", -1), build({**CFG, "strategies": {"nyorb": {"enabled": True}}})[0]]
+    eng._refresh_switches()
+    assert eng.switch_on("XAUUSD_o", "winner")[0]
+    on, why = eng.switch_on("XAUUSD_o", "loser")
+    assert not on and "کلید خودکار" in why
+    assert eng.switch["XAUUSD_o|loser"]["sum_r"] < 0 <= eng.switch["XAUUSD_o|winner"]["sum_r"]
+    assert eng.switch_on("XAUUSD_o", eng.strategies[2].name) == (True, "")  # styles without the switch
+    assert (tmp_path / "switch.json").exists()
+
+
+def test_styles_share_a_symbol_only_on_hedging_accounts(tmp_path):
+    import asli.live as live
+    from asli.broker import Position
+    eng = live.Engine.__new__(live.Engine)
+    eng.cfg = {**CFG, "risk": {**CFG["risk"], "one_position_per": "strategy"}}
+    eng.trade_meta, eng.state_dir, eng.loss_streak = {}, tmp_path, 0
+    eng.day_key = eng.day_start_balance = None
+    pb = PaperBroker(10000)
+    pb._pos.append(Position(1, "XAUUSD_o", 1, 0.1, 2000.0, 1990.0, 2020.0, datetime.now(timezone.utc), "asli nyorb"))
+    eng.broker = pb
+    st = eng.account_state("XAUUSD_o", "donch")
+    assert not st["same_symbol_open"] and not st["same_strategy_open"]
+    assert eng.account_state("XAUUSD_o", "nyorb")["same_strategy_open"]
+    pb.hedging = lambda: False  # netting account: one position per symbol again
+    assert eng.account_state("XAUUSD_o", "donch")["same_symbol_open"]
+    eng.cfg = CFG  # default mode
+    pb.hedging = lambda: True
+    assert eng.account_state("XAUUSD_o", "donch")["same_symbol_open"]
+    v = DevilsAdvocate(CFG).review({"symbol": "XAUUSD_o", "strategy": "donch", "direction": 1, "rr": 2.0,
+                                    "sl_pips": 300, "spread_pips": 2.0}, {"same_strategy_open": True})
+    assert not v.approved and any("همین سبک" in x for x in v.vetoes)

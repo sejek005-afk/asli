@@ -16,9 +16,10 @@ from pathlib import Path
 
 import pandas as pd
 
+from . import backtest as bt
 from .broker import lot_size, round_volume
 from .config import for_symbol
-from .data import mt5_recent, mt5_symbol_meta, mt5_connect
+from .data import mt5_connect, mt5_history, mt5_recent, mt5_symbol_meta
 from .devil import DevilsAdvocate
 from .fundamental import Fundamentals
 from .fusion import annotate
@@ -70,6 +71,7 @@ class Engine:
         self.loss_streak = 0
         self.day_start_balance = None
         self.day_key = None
+        self.switch: dict = self._load("switch.json", {})
         # look back to the oldest trade we still track (covers restarts after long downtime)
         opened = [datetime.fromisoformat(m["opened"]) for m in self.trade_meta.values() if m.get("opened")]
         self._deals_since = min(opened + [datetime.now(UTC)]) - timedelta(days=1)
@@ -113,16 +115,118 @@ class Engine:
                 self.day_key, self.day_start_balance = today, acc["balance"]
                 self._save("day.json", {"day": today, "balance": acc["balance"]})
 
-    def account_state(self, symbol: str) -> dict:
+    def _owner(self, ticket, comment: str) -> str | None:
+        """Which style opened a position/order: our trade journal first, else the 'asli <style>' comment."""
+        m = self.trade_meta.get(str(ticket))
+        if m and m.get("strategy"):
+            return str(m["strategy"])
+        parts = str(comment or "").split()
+        return parts[1] if len(parts) >= 2 and parts[0] == "asli" else None
+
+    def one_position_per(self) -> str:
+        mode = str(self.cfg["risk"].get("one_position_per", "symbol"))
+        if mode == "strategy" and not getattr(self.broker, "hedging", lambda: False)():
+            return "symbol"  # a netting account merges positions of one symbol: styles can't share it
+        return mode
+
+    def account_state(self, symbol: str, strategy: str | None = None) -> dict:
         acc = self.broker.account()
         self._roll_day(acc)
         start = self.day_start_balance or acc["balance"]
         loss_pct = max(0.0, (start - acc["equity"]) / start * 100) if start else 0.0
         pos = self.broker.positions()
-        return {"daily_loss_pct": loss_pct, "open_positions": len(pos) + len(self.broker.orders()),
-                "same_symbol_open": any(p.symbol == symbol for p in pos) or
-                any(o.symbol == symbol for o in self.broker.orders()),
+        orders = self.broker.orders()
+        mine = [x for x in list(pos) + list(orders) if x.symbol == symbol]
+        if self.one_position_per() == "strategy" and strategy:
+            same_sym = False
+            same_strat = any(self._owner(x.ticket, x.comment) in (strategy, None) for x in mine)
+        else:
+            same_sym, same_strat = bool(mine), False
+        return {"daily_loss_pct": loss_pct, "open_positions": len(pos) + len(orders),
+                "same_symbol_open": same_sym, "same_strategy_open": same_strat,
                 "loss_streak": self.loss_streak, "balance": acc["balance"], "equity": acc["equity"]}
+
+    # ------------------------------------------------------------------ automatic on/off switch
+    def _refresh_switches(self, force: bool = False) -> None:
+        """Once per trading day, replay every `auto_switch` style over its last `switch_lookback_days` of this
+        broker's history (same simulator as the backtest). It may trade only while that replay made money
+        with at least `switch_min_trades` finished trades."""
+        strats = [s for s in self.strategies if s.p.get("auto_switch")]
+        if not strats or self.mt5 is None:
+            return
+        now = pd.Timestamp.now(tz=UTC)
+        today = str(trading_day(pd.DatetimeIndex([now]))[0])
+        if not force and self.switch.get("_day") == today:
+            retry = self.switch.get("_retry_at")
+            if not retry or now < pd.Timestamp(retry):
+                return
+        out: dict = {"_day": today, "_at": now.isoformat()}
+        look_max = max(float(s.p.get("switch_lookback_days", 365)) for s in strats)
+        for symbol in self.cfg["symbols"]:
+            todo = [s for s in strats if not hasattr(s, "applies_to") or s.applies_to(symbol)]
+            if not todo:
+                continue
+            try:
+                meta = self.metas.get(symbol) or mt5_symbol_meta(self.mt5, symbol)
+                df = mt5_history(self.mt5, symbol, (look_max + 60) / 365.25, self.time_mode, "M5")
+                df = df[df.index < now - pd.Timedelta(minutes=5)]  # closed bars only
+                try:
+                    d1 = mt5_recent(self.mt5, symbol, int(look_max) + 400, self.time_mode, "D1")
+                    d1.index = pd.Index(trading_day(d1.index + pd.Timedelta(hours=1)))
+                except Exception:  # noqa: BLE001 - the daily context is then built from the M5 history
+                    d1 = None
+                ctx = Context(df, meta, self.cfg, d1)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("auto switch: history for %s unavailable: %s", symbol, exc)
+                for s in todo:
+                    out[f"{symbol}|{s.name}"] = {"on": False, "why": f"history unavailable: {exc}"}
+                continue
+            for s in todo:
+                look = float(s.p.get("switch_lookback_days", 365))
+                min_n = int(s.p.get("switch_min_trades", 20))
+                start = now - pd.Timedelta(days=look)
+                info = {"on": False, "since": start.isoformat()}
+                try:
+                    covered = (df.index[-1] - df.index[0]).days
+                    tr = bt.run(s.generate(ctx), ctx)
+                    if len(tr):
+                        t0 = pd.to_datetime(tr["time"], utc=True)
+                        t1 = pd.to_datetime(tr["exit_time"], utc=True)
+                        tr = tr[(t0 >= start) & (t1 < df.index[-1])]  # finished trades inside the window
+                    n = len(tr)
+                    tot = float(tr["r"].sum()) if n else 0.0
+                    info.update({"trades": n, "sum_r": round(tot, 2), "avg_r": round(tot / n, 3) if n else 0.0,
+                                 "win_rate": round(float((tr["r"] > 0).mean()), 3) if n else 0.0,
+                                 "covered_days": int(covered)})
+                    if covered < 0.9 * look:
+                        info["why"] = f"only {covered} days of history"
+                    elif n < min_n:
+                        info["why"] = f"only {n} trades in the window (need {min_n})"
+                    elif tot <= 0:
+                        info["why"] = f"last {int(look)} days lost {tot:+.1f}R"
+                    else:
+                        info["on"] = True
+                except Exception as exc:  # noqa: BLE001
+                    info["why"] = f"replay failed: {exc}"
+                    log.exception("auto switch replay %s %s failed", symbol, s.name)
+                out[f"{symbol}|{s.name}"] = info
+                log.info("auto switch %s %s: %s", symbol, s.name, info)
+        if any(isinstance(v, dict) and str(v.get("why", "")).startswith(("history unavailable", "replay failed"))
+               for v in out.values()):
+            out["_retry_at"] = (now + pd.Timedelta(minutes=30)).isoformat()  # try again soon, not tomorrow
+        self.switch = out
+        self._save("switch.json", out)
+
+    def switch_on(self, symbol: str, strategy: str) -> tuple[bool, str]:
+        s = next((x for x in self.strategies if x.name == strategy), None)
+        if s is None or not s.p.get("auto_switch"):
+            return True, ""
+        info = self.switch.get(f"{symbol}|{strategy}")
+        if not info:
+            return False, "کلید خودکار هنوز محاسبه نشده"
+        if info.get("on"):
+            return True, ""
+        return False, f"کلید خودکار خاموش است ({info.get('why', '')})"
 
     # ------------------------------------------------------------------ main step
     def _ensure_mt5(self) -> None:
@@ -153,6 +257,10 @@ class Engine:
         with self.lock:
             self._ensure_mt5()
             self.fund.refresh()
+            try:
+                self._refresh_switches()
+            except Exception as exc:  # noqa: BLE001
+                log.exception("auto switch refresh failed: %s", exc)
             self._learn_from_closed()
             for symbol in self.cfg["symbols"]:
                 try:
@@ -206,11 +314,15 @@ class Engine:
         row["prob"] = self.learner.prob(row)
         row["ev"] = self.learner.expected_r(row)
         row["hour_edge"] = self.learner.edges["hour"].get(f"{row['strategy']}|{row['ny_hour']}", 0.0)
-        acc = self.account_state(sym)
+        acc = self.account_state(sym, row["strategy"])
         verdict = self.devil.review(row, acc)
         if self.paused:
             verdict.approved = False
             verdict.vetoes.append("ربات از اپ متوقف شده")
+        ok, why = self.switch_on(sym, row["strategy"])
+        if not ok:
+            verdict.approved = False
+            verdict.vetoes.append(why)
         decision = {"time": now.isoformat(), "symbol": sym, "strategy": row["strategy"],
                     "direction": row["direction"], "entry": row["entry"], "sl": row["sl"], "tp": row["tp"],
                     "prob": round(row["prob"], 3), "ev": round(row["ev"], 3), "approved": verdict.approved,
@@ -362,6 +474,7 @@ class Engine:
                 "learner": {"n_trained": self.learner.n_trained, "live_updates": self.learner.n_live_updates,
                             "top": self.learner.top_weights(6), "best_times": self.learner.best_times()[:10]},
                 "fundamental": self.fund.snapshot(self.cfg["symbols"]),
+                "auto_switch": {k: v for k, v in self.switch.items() if not k.startswith("_")},
                 "time": datetime.now(UTC).isoformat(),
             }
 

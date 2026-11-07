@@ -36,6 +36,9 @@ DEFAULTS: dict = {
         "risk_per_trade_pct": 0.5,
         "max_daily_loss_pct": 2.0,
         "max_open_positions": 2,
+        # "symbol": one ASLI position per symbol (all styles share it). "strategy": one per style and symbol,
+        # so several styles can trade the same symbol (hedging accounts only; netting falls back to "symbol")
+        "one_position_per": "symbol",
         "halve_after_losses": 3,
         "min_sl_pips": 3.0,
         "max_sl_pips": 25.0,
@@ -66,6 +69,14 @@ DEFAULTS: dict = {
                   # (unfiltered +0.049R vs +0.008R agent-only vs -0.020R learner+agent on 2024-26), so for this
                   # style they only advise; every safety veto (news, stops, spread, daily loss) still applies.
                   "min_prob": 0.0, "min_ev_r": -9.0, "approve_margin": -99},
+        # gold hourly channel breakout with the daily trend (see asli/strategies/donch.py); off by default.
+        # It lost 2021-24 and won 2025-26, so it comes with the automatic switch: trade only while its own
+        # last `switch_lookback_days` (>= `switch_min_trades` trades) are profitable. Any style accepts
+        # auto_switch. Its stop is 1.5 hourly ATRs ($20-40 at $4000 gold), hence its own stop cap.
+        "donch": {"enabled": False, "symbols": ["XAU"], "channel_bars": 20, "sl_atr": 1.5, "tp_atr": 3.0,
+                  "max_hold_hours": 48, "with_daily_trend": True, "skip_ny_hours": [16, 18],
+                  "min_rr": 1.5, "max_sl_pips": 1500.0, "min_prob": 0.0, "min_ev_r": -9.0, "approve_margin": -99,
+                  "auto_switch": True, "switch_lookback_days": 365, "switch_min_trades": 20},
     },
     "fusion": {
         "min_prob": 0.40,

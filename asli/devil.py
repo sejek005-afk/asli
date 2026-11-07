@@ -89,6 +89,8 @@ class DevilsAdvocate:
             v.vetoes.append("تعداد پوزیشن‌های باز به حداکثر رسیده")
         if account.get("same_symbol_open", False):
             v.vetoes.append("روی همین نماد پوزیشن باز داریم")
+        if account.get("same_strategy_open", False):
+            v.vetoes.append("همین سبک روی این نماد پوزیشن یا سفارش باز دارد")
         p = c.get("prob")
         if p is not None and p < min_prob:
             v.vetoes.append(f"مدل یادگیرنده احتمال برد را {p:.0%} می‌داند (حداقل {min_prob:.0%})")

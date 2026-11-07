@@ -79,8 +79,16 @@ class MT5Broker:
         if demo and mode == "real":
             log.warning("mode=real but the connected account is DEMO")
         self.is_demo = demo
-        log.info("MT5 account %s (%s) balance=%.2f %s", info.login, "DEMO" if demo else "REAL", info.balance,
-                 info.currency)
+        log.info("MT5 account %s (%s) balance=%.2f %s, %s", info.login, "DEMO" if demo else "REAL", info.balance,
+                 info.currency, "hedging" if self.hedging() else "netting")
+
+    def hedging(self) -> bool:
+        """True on a hedging account (several positions per symbol); netting accounts merge them."""
+        try:
+            info = self.mt5.account_info()
+            return info.margin_mode == self.mt5.ACCOUNT_MARGIN_MODE_RETAIL_HEDGING
+        except Exception:  # noqa: BLE001
+            return False
 
     # ------------------------------------------------------------------ account
     def account(self) -> dict:
@@ -198,6 +206,9 @@ class PaperBroker:
         self.tick_value = 1.0
         self.tick_size = 0.00001
         self.is_demo = True
+
+    def hedging(self) -> bool:
+        return True
 
     def account(self) -> dict:
         return {"login": 0, "balance": self.balance, "equity": self.equity, "currency": "USD", "demo": True,
