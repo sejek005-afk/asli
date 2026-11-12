@@ -23,6 +23,12 @@ JUDGE_B = pd.Timestamp("2026-11-07", tz="UTC")
 T_MIN, MEAN_MIN, N_MIN, ALPHA_T_MIN = 2.9, 0.04, 150, 2.0
 
 
+def times(lab: dict) -> pd.DatetimeIndex:
+    """Bar times; older label files stored epoch seconds instead of nanoseconds."""
+    t = lab["t"]
+    return pd.to_datetime(t, unit="s" if t.max() < 1e11 else "ns", utc=True)
+
+
 def sequence(pl: np.ndarray, ps: np.ndarray, lab: dict, h: int, theta: float) -> pd.DataFrame:
     """Non-overlapping trades: enter when flat and the larger prediction >= theta."""
     best = np.fmax(pl, ps)
@@ -38,7 +44,7 @@ def sequence(pl: np.ndarray, ps: np.ndarray, lab: dict, h: int, theta: float) ->
         free = p + off
         i = np.searchsorted(cand, free, side="left")
     df = pd.DataFrame(rows, columns=["pos", "side", "r", "cost", "mkt", "exit_pos"])
-    t = pd.DatetimeIndex(lab["t"], tz="UTC")
+    t = times(lab)
     df["time"] = t[df["pos"].to_numpy()] if len(df) else pd.DatetimeIndex([], tz="UTC")
     df["exit_time"] = t[np.minimum(df["exit_pos"].to_numpy(), len(t) - 1)] if len(df) else pd.DatetimeIndex([], tz="UTC")
     return df
@@ -128,7 +134,7 @@ def main() -> int:
                 res = judge(tr)
                 res["theta_picks"] = picks
                 # side reports
-                t = pd.DatetimeIndex(lab["t"], tz="UTC")
+                t = times(lab)
                 skill = {}
                 for y in range(2022, 2027):
                     m = (t.year == y) & np.isfinite(pl) & np.isfinite(lab[f"r_long_{h}"])

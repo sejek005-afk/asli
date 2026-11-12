@@ -1,0 +1,439 @@
+{
+ "gbtall|XAUUSD_o|12": {
+  "n": 156,
+  "mean": -0.0341,
+  "t": -0.38,
+  "win": 0.436,
+  "alpha_t": -0.9,
+  "mean_2x_cost": -0.0789,
+  "full_mean": -0.0088,
+  "full_n": 187,
+  "failed": [
+   "mean>=0.04R",
+   "t>=2.9",
+   "positive_at_2x_cost",
+   "alpha_t>=2",
+   "full_period_positive"
+  ],
+  "passed": false
+ },
+ "gbtall|XAUUSD_o|48": {
+  "n": 942,
+  "mean": 0.0072,
+  "t": 0.21,
+  "win": 0.455,
+  "alpha_t": 0.14,
+  "mean_2x_cost": -0.0228,
+  "full_mean": 0.0177,
+  "full_n": 950,
+  "failed": [
+   "mean>=0.04R",
+   "t>=2.9",
+   "positive_at_2x_cost",
+   "alpha_t>=2"
+  ],
+  "passed": false
+ },
+ "gbtall|XAUUSD_o|288": {
+  "n": 474,
+  "mean": -0.004,
+  "t": -0.08,
+  "win": 0.458,
+  "alpha_t": -0.24,
+  "mean_2x_cost": -0.0167,
+  "full_mean": 0.0178,
+  "full_n": 1038,
+  "failed": [
+   "mean>=0.04R",
+   "t>=2.9",
+   "positive_at_2x_cost",
+   "alpha_t>=2"
+  ],
+  "passed": false
+ },
+ "gbtall|EURUSD_o|12": {
+  "n": 12,
+  "mean": -0.9186,
+  "t": -3.91,
+  "win": 0.083,
+  "alpha_t": -4.24,
+  "mean_2x_cost": -1.0882,
+  "full_mean": -0.6434,
+  "full_n": 25,
+  "failed": [
+   "trades>=150",
+   "mean>=0.04R",
+   "t>=2.9",
+   "positive_at_2x_cost",
+   "alpha_t>=2",
+   "full_period_positive"
+  ],
+  "passed": false
+ },
+ "gbtall|EURUSD_o|48": {
+  "n": 83,
+  "mean": -0.1218,
+  "t": -1.01,
+  "win": 0.41,
+  "alpha_t": -1.19,
+  "mean_2x_cost": -0.2215,
+  "full_mean": -0.1395,
+  "full_n": 207,
+  "failed": [
+   "trades>=150",
+   "mean>=0.04R",
+   "t>=2.9",
+   "positive_at_2x_cost",
+   "alpha_t>=2",
+   "full_period_positive"
+  ],
+  "passed": false
+ },
+ "gbtall|EURUSD_o|288": {
+  "n": 0,
+  "mean": null,
+  "t": null,
+  "win": null,
+  "alpha_t": null,
+  "mean_2x_cost": null,
+  "full_mean": 0.0011,
+  "full_n": 419,
+  "failed": [
+   "trades>=150",
+   "mean>=0.04R",
+   "t>=2.9",
+   "both_halves_positive",
+   "positive_at_2x_cost",
+   "alpha_t>=2"
+  ],
+  "passed": false
+ },
+ "gbt24|XAUUSD_o|12": {
+  "n": 164,
+  "mean": -0.0404,
+  "t": -0.46,
+  "win": 0.439,
+  "alpha_t": -0.34,
+  "mean_2x_cost": -0.1302,
+  "full_mean": -0.0064,
+  "full_n": 199,
+  "failed": [
+   "mean>=0.04R",
+   "t>=2.9",
+   "positive_at_2x_cost",
+   "alpha_t>=2",
+   "full_period_positive"
+  ],
+  "passed": false
+ },
+ "gbt24|XAUUSD_o|48": {
+  "n": 1682,
+  "mean": -0.0135,
+  "t": -0.54,
+  "win": 0.451,
+  "alpha_t": -0.81,
+  "mean_2x_cost": -0.0411,
+  "full_mean": -0.0305,
+  "full_n": 2054,
+  "failed": [
+   "mean>=0.04R",
+   "t>=2.9",
+   "positive_at_2x_cost",
+   "alpha_t>=2",
+   "full_period_positive"
+  ],
+  "passed": false
+ },
+ "gbt24|XAUUSD_o|288": {
+  "n": 627,
+  "mean": 0.0853,
+  "t": 1.97,
+  "win": 0.499,
+  "alpha_t": 0.9,
+  "mean_2x_cost": 0.0703,
+  "full_mean": 0.0751,
+  "full_n": 1156,
+  "failed": [
+   "t>=2.9",
+   "alpha_t>=2"
+  ],
+  "passed": false
+ },
+ "gbt24|EURUSD_o|12": {
+  "n": 0,
+  "mean": null,
+  "t": null,
+  "win": null,
+  "alpha_t": null,
+  "mean_2x_cost": null,
+  "full_mean": null,
+  "full_n": 0,
+  "failed": [
+   "trades>=150",
+   "mean>=0.04R",
+   "t>=2.9",
+   "both_halves_positive",
+   "positive_at_2x_cost",
+   "alpha_t>=2",
+   "full_period_positive"
+  ],
+  "passed": false
+ },
+ "gbt24|EURUSD_o|48": {
+  "n": 254,
+  "mean": -0.1618,
+  "t": -2.43,
+  "win": 0.417,
+  "alpha_t": -2.37,
+  "mean_2x_cost": -0.2735,
+  "full_mean": -0.1495,
+  "full_n": 383,
+  "failed": [
+   "mean>=0.04R",
+   "t>=2.9",
+   "both_halves_positive",
+   "positive_at_2x_cost",
+   "alpha_t>=2",
+   "full_period_positive"
+  ],
+  "passed": false
+ },
+ "gbt24|EURUSD_o|288": {
+  "n": 235,
+  "mean": -0.1476,
+  "t": -2.21,
+  "win": 0.391,
+  "alpha_t": -2.18,
+  "mean_2x_cost": -0.1905,
+  "full_mean": -0.0568,
+  "full_n": 697,
+  "failed": [
+   "mean>=0.04R",
+   "t>=2.9",
+   "positive_at_2x_cost",
+   "alpha_t>=2",
+   "full_period_positive"
+  ],
+  "passed": false
+ },
+ "gbtpool|XAUUSD_o|12": {
+  "n": 8,
+  "mean": -0.1178,
+  "t": -0.24,
+  "win": 0.375,
+  "alpha_t": null,
+  "mean_2x_cost": -0.1657,
+  "full_mean": -0.0412,
+  "full_n": 15,
+  "failed": [
+   "trades>=150",
+   "mean>=0.04R",
+   "t>=2.9",
+   "both_halves_positive",
+   "positive_at_2x_cost",
+   "alpha_t>=2",
+   "full_period_positive"
+  ],
+  "passed": false
+ },
+ "gbtpool|XAUUSD_o|48": {
+  "n": 476,
+  "mean": -0.0097,
+  "t": -0.21,
+  "win": 0.454,
+  "alpha_t": -0.5,
+  "mean_2x_cost": -0.0391,
+  "full_mean": -0.0109,
+  "full_n": 478,
+  "failed": [
+   "mean>=0.04R",
+   "t>=2.9",
+   "positive_at_2x_cost",
+   "alpha_t>=2",
+   "full_period_positive"
+  ],
+  "passed": false
+ },
+ "gbtpool|XAUUSD_o|288": {
+  "n": 594,
+  "mean": 0.0494,
+  "t": 1.1,
+  "win": 0.461,
+  "alpha_t": -0.05,
+  "mean_2x_cost": 0.0342,
+  "full_mean": 0.0462,
+  "full_n": 1099,
+  "failed": [
+   "t>=2.9",
+   "alpha_t>=2"
+  ],
+  "passed": false
+ },
+ "gbtpool|EURUSD_o|12": {
+  "n": 6,
+  "mean": -0.4924,
+  "t": -0.99,
+  "win": 0.167,
+  "alpha_t": null,
+  "mean_2x_cost": -0.5629,
+  "full_mean": -0.4924,
+  "full_n": 6,
+  "failed": [
+   "trades>=150",
+   "mean>=0.04R",
+   "t>=2.9",
+   "both_halves_positive",
+   "positive_at_2x_cost",
+   "alpha_t>=2",
+   "full_period_positive"
+  ],
+  "passed": false
+ },
+ "gbtpool|EURUSD_o|48": {
+  "n": 77,
+  "mean": -0.2087,
+  "t": -1.75,
+  "win": 0.364,
+  "alpha_t": -1.74,
+  "mean_2x_cost": -0.2846,
+  "full_mean": -0.1531,
+  "full_n": 152,
+  "failed": [
+   "trades>=150",
+   "mean>=0.04R",
+   "t>=2.9",
+   "both_halves_positive",
+   "positive_at_2x_cost",
+   "alpha_t>=2",
+   "full_period_positive"
+  ],
+  "passed": false
+ },
+ "gbtpool|EURUSD_o|288": {
+  "n": 83,
+  "mean": 0.0717,
+  "t": 0.58,
+  "win": 0.482,
+  "alpha_t": 0.17,
+  "mean_2x_cost": 0.0196,
+  "full_mean": 0.0036,
+  "full_n": 497,
+  "failed": [
+   "trades>=150",
+   "t>=2.9",
+   "both_halves_positive",
+   "alpha_t>=2"
+  ],
+  "passed": false
+ },
+ "knn|XAUUSD_o|12": {
+  "n": 2,
+  "mean": -0.7266,
+  "t": 0.0,
+  "win": 0.0,
+  "alpha_t": null,
+  "mean_2x_cost": -0.7952,
+  "full_mean": -0.7266,
+  "full_n": 2,
+  "failed": [
+   "trades>=150",
+   "mean>=0.04R",
+   "t>=2.9",
+   "both_halves_positive",
+   "positive_at_2x_cost",
+   "alpha_t>=2",
+   "full_period_positive"
+  ],
+  "passed": false
+ },
+ "knn|XAUUSD_o|48": {
+  "n": 1296,
+  "mean": -0.0086,
+  "t": -0.3,
+  "win": 0.454,
+  "alpha_t": -0.24,
+  "mean_2x_cost": -0.0387,
+  "full_mean": -0.0049,
+  "full_n": 1354,
+  "failed": [
+   "mean>=0.04R",
+   "t>=2.9",
+   "positive_at_2x_cost",
+   "alpha_t>=2",
+   "full_period_positive"
+  ],
+  "passed": false
+ },
+ "knn|XAUUSD_o|288": {
+  "n": 636,
+  "mean": 0.0961,
+  "t": 2.24,
+  "win": 0.498,
+  "alpha_t": 1.51,
+  "mean_2x_cost": 0.081,
+  "full_mean": 0.0757,
+  "full_n": 791,
+  "failed": [
+   "t>=2.9",
+   "alpha_t>=2"
+  ],
+  "passed": false
+ },
+ "knn|EURUSD_o|12": {
+  "n": 3,
+  "mean": 0.3783,
+  "t": 0.44,
+  "win": 0.667,
+  "alpha_t": null,
+  "mean_2x_cost": 0.1949,
+  "full_mean": -0.3799,
+  "full_n": 69,
+  "failed": [
+   "trades>=150",
+   "t>=2.9",
+   "both_halves_positive",
+   "alpha_t>=2",
+   "full_period_positive"
+  ],
+  "passed": false
+ },
+ "knn|EURUSD_o|48": {
+  "n": 10,
+  "mean": -0.2162,
+  "t": -0.57,
+  "win": 0.4,
+  "alpha_t": null,
+  "mean_2x_cost": -0.3124,
+  "full_mean": -0.1525,
+  "full_n": 107,
+  "failed": [
+   "trades>=150",
+   "mean>=0.04R",
+   "t>=2.9",
+   "both_halves_positive",
+   "positive_at_2x_cost",
+   "alpha_t>=2",
+   "full_period_positive"
+  ],
+  "passed": false
+ },
+ "knn|EURUSD_o|288": {
+  "n": 118,
+  "mean": -0.1744,
+  "t": -1.93,
+  "win": 0.39,
+  "alpha_t": -2.05,
+  "mean_2x_cost": -0.2083,
+  "full_mean": 0.0041,
+  "full_n": 602,
+  "failed": [
+   "trades>=150",
+   "mean>=0.04R",
+   "t>=2.9",
+   "both_halves_positive",
+   "positive_at_2x_cost",
+   "alpha_t>=2"
+  ],
+  "passed": false
+ }
+}

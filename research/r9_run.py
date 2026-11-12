@@ -57,7 +57,7 @@ def prepare(paths: dict[str, str], work: Path) -> dict[str, dict]:
             for k, v in lab.items():
                 d[f"{k}_{h}"] = v
         data[s] = d
-        np.savez_compressed(work / f"labels_{s}.npz", t=raw[s].index.asi8,
+        np.savez_compressed(work / f"labels_{s}.npz", t=raw[s].index.as_unit("ns").asi8,
                             **{k: v for k, v in d.items() if k.split("_")[0] in ("r", "off", "mkt", "cost", "S")})
         print(s, "rows", len(X), "features", len(cols), "pattern features", len(d["pat_idx"]), flush=True)
     return data
