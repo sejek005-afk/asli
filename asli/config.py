@@ -99,6 +99,10 @@ DEFAULTS: dict = {
         "train_fraction": 0.6,
     },
     "devil": {"approve_margin": 2, "strict": True},
+    # Telegram reports (trade opened / closed + one nightly summary). The bot token is normally pasted in the
+    # app (Settings -> Telegram) and kept in state/settings.json; bot_token/chat_id here are optional overrides.
+    # proxy: e.g. "socks5h://127.0.0.1:1080" if api.telegram.org is not reachable from the server.
+    "telegram": {"bot_token": "", "chat_id": None, "report_time": "23:30", "proxy": None},
     "fundamental": {
         "enabled": True,
         "calendar_url": "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
@@ -107,6 +111,13 @@ DEFAULTS: dict = {
         "calendar_stale_hours": 3,
         "blackout_high_min": 30,
         "blackout_medium_min": 10,
+        # medium/low-impact events whose title matches one of these never block or penalise a trade
+        "irrelevant_events": ["WASDE", "crop", "grain", "poultry", "cattle", "hogs?", "cotton", "livestock",
+                              "natural gas stor", "crude oil (inventor|stock)", "API (weekly|crude)",
+                              "EIA .*(stock|inventor|product|refinery|distillate|gasoline|heating)",
+                              "gasoline", "distillate", "rig count", "auction", "redbook",
+                              "MBA (mortgage|purchase|refinanc|30)", "mortgage (applic|market|refinanc)",
+                              "CFTC", "total vehicle sales"],
         "news_feeds": [  # fxstreet.com answers 403 to servers, so it was dropped
             "https://investinglive.com/feed/news",
             "https://www.investing.com/rss/news_1.rss",
