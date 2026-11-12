@@ -1,3 +1,4 @@
+import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -615,3 +616,66 @@ def test_daily_loss_counts_only_this_bots_trades(tmp_path):
     eng.broker._pos.append(Position(9, "XAUUSD_o", 1, 0.1, 2000.0, 1990.0, 2020.0, datetime.now(timezone.utc), "asli nyorb"))
     eng.broker.quotes["XAUUSD_o"] = (1990.0, 1990.3)  # our position is $10 x 10 oz = -$100 under water
     assert abs(eng.account_state("XAUUSD_o")["daily_loss_pct"] - 1.0) < 1e-6  # 100 of 10,000
+
+
+def test_irrelevant_medium_news_does_not_block_gold():
+    from asli.fundamental import Fundamentals
+    f = Fundamentals(CFG, "/nonexistent")
+    t = datetime(2026, 11, 10, 17, 0, tzinfo=timezone.utc)
+    f.events = [{"t": t, "cur": "USD", "impact": "Medium", "title": "WASDE Poultry Production"},
+                {"t": t, "cur": "USD", "impact": "Medium", "title": "10-Year Note Auction"}]
+    assert f.blackout("XAUUSD_o", t) is None and f.event_risk("XAUUSD_o", t - timedelta(hours=1))[0] == 0.0
+    f.events.append({"t": t, "cur": "USD", "impact": "Medium", "title": "Unemployment Claims"})
+    assert f.blackout("XAUUSD_o", t)["title"] == "Unemployment Claims"
+    f.events = [{"t": t, "cur": "USD", "impact": "High", "title": "Crude Oil Inventories"}]  # high impact always counts
+    assert f.blackout("XAUUSD_o", t) is not None
+
+
+def test_telegram_reports(tmp_path, monkeypatch):
+    from asli import notify
+    from asli.broker import Position
+    eng = _engine(tmp_path)
+    tg = eng.telegram
+    assert not tg.ready and not tg.report_due(datetime.now(timezone.utc))
+    tg.send("dropped silently while not set up")
+    assert eng.apply_settings({"telegram_token": "not a token"})["telegram"]["note"]
+    token = "123456789:" + "A" * 35
+    v = eng.apply_settings({"telegram_token": token})["telegram"]
+    assert v["configured"] and not v["chat"] and token not in json.dumps(eng.settings_view()) and v["token_hint"] == "…AAAA"
+    sent = []
+
+    def fake(method, payload, timeout=10.0):
+        if method == "getUpdates":
+            return {"ok": True, "result": [{"message": {"chat": {"id": 42, "first_name": "Ali"}}}]}
+        sent.append(payload)
+        return {"ok": True}
+    monkeypatch.setattr(tg, "_call", fake)
+    assert tg.test()["ok"] and tg.chat_id == 42 and sent[0]["chat_id"] == 42
+    # nightly report: once per Tehran day, after 23:30
+    early = datetime(2026, 11, 12, 15, 0, tzinfo=timezone.utc)   # 18:30 Tehran
+    late = datetime(2026, 11, 12, 20, 5, tzinfo=timezone.utc)    # 23:35 Tehran
+    assert not tg.report_due(early) and tg.report_due(late)
+    tg.mark_report(late)
+    assert not tg.report_due(late + timedelta(minutes=10)) and tg.report_due(late + timedelta(days=1))
+    j = [{"ticket": "1", "symbol": "XAUUSD_o", "strategy": "donch", "direction": -1, "opened": "2026-11-12T09:00:00+00:00",
+          "closed": "2026-11-12T10:40:00+00:00", "profit": -49.08, "r": -0.98},
+         {"ticket": "0", "symbol": "XAUUSD_o", "strategy": "nyorb", "direction": -1, "opened": "2026-11-11T14:10:00+00:00",
+          "closed": "2026-11-11T14:38:00+00:00", "profit": 66.68, "r": 1.35}]
+    pos = [Position(9, "XAUUSD_o", 1, 0.02, 3950.0, 3930.0, 3990.0, late, "asli donch")]
+    txt = notify.daily_text(j, pos, {"XAUUSD_o|scalp": {"on": False}}, {"balance": 10000.0}, late)
+    assert "۲۴ ساعت اخیر: 1 معامله، -49.08 دلار" in txt and "از شروع: 2 معامله، 1 سود و 1 ضرر، +17.60 دلار" in txt
+    assert "شکست کانال ساعتی" in txt and "کلید خودکار خاموش: اسکلپ" in txt and "خرید XAUUSD_o 0.02 لات" in txt
+    assert "+66.68" in notify.close_text(j[1], 17.6, 2)
+    # kept after a restart, and removable
+    again = _engine(tmp_path)
+    assert again.telegram.ready and again.telegram.chat_id == 42
+    assert not again.apply_settings({"telegram_token": ""})["telegram"]["configured"]
+    assert not _engine(tmp_path).telegram.ready
+
+
+def test_every_decision_is_logged(tmp_path):
+    eng = _engine(tmp_path)
+    eng._log_decision({"time": "t1", "strategy": "donch", "approved": False, "debate": "وتو: ..."})
+    eng._log_decision({"time": "t2", "strategy": "nyorb", "approved": True, "debate": "ok"})
+    lines = (tmp_path / "decisions_log.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 2 and json.loads(lines[0])["strategy"] == "donch"

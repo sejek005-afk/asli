@@ -10,6 +10,7 @@ GET  /api/update        state of the last in-app update
 POST /api/update        git pull + backtest, then restart (start_live.cmd's loop restarts the bot)
 GET  /api/report        latest research summary (json)
 GET  /report            latest research report (html)
+POST /api/telegram/test find the user's chat (after they messaged the bot) and send a test message
 POST /api/pause         stop opening new trades
 POST /api/resume        allow new trades again
 POST /api/close_all     close every ASLI position and cancel orders
@@ -186,10 +187,18 @@ function renderSet(x){const v=x.values,z=x.sizing||{};let h=`<div class="card" s
  <h2>کنترل ربات</h2><div class="card"><div class="row"><button class="btn" onclick="post('pause')">توقف معامله‌ی تازه</button><button class="btn" onclick="post('resume')">ادامه</button><span class="sp"></span>
  <button class="btn d" onclick="if(confirm('همه‌ی پوزیشن‌های ربات بسته شود؟'))post('close_all')">بستن همه</button></div></div>
  <h2>گزارش</h2><div class="card"><button class="btn w" onclick="location='/report?token='+encodeURIComponent(tok())">گزارش کامل بک‌تست</button></div>
+ <h2>گزارش در تلگرام</h2><div class="card">${tgCard(x.telegram||{})}</div>
  <h2>به‌روزرسانی</h2><div class="card"><p class="note">آخرین نسخه را از GitHub می‌گیرد، بک‌تست را دوباره اجرا می‌کند و ربات را دوباره راه می‌اندازد (حدود ۱ دقیقه).</p>
  <button class="btn w" onclick="doUpdate()">به‌روزرسانی ربات</button><div id="um" class="note"></div></div>
  <div class="note" style="margin:10px 4px">آخرین تغییر تنظیمات: ${x.updated_at?thr(x.updated_at):'—'}</div>`;
  $('tab-set').innerHTML=h;moneyShow();riskInfo()}
+function tgCard(t){const st=t.configured?(t.chat?`<span class="g">وصل است${t.chat_name?' به '+esc(t.chat_name):''}</span> · توکن ${esc(t.token_hint)}`:'توکن ذخیره شده؛ هنوز چت پیدا نشده'):'وصل نیست';
+ return `<div class="note">ربات باز و بسته شدن هر معامله و هر شب ساعت ${esc(t.report_time||'23:30')} تهران یک گزارش کامل می‌فرستد. وضعیت: ${st}${t.last_error?'<br><span class="r">آخرین خطا: '+esc(t.last_error)+'</span>':''}${t.note?'<br><span class="r">'+esc(t.note)+'</span>':''}</div>
+ <div class="note">۱) در تلگرام به <b>@BotFather</b> پیام بدهید، <b>/newbot</b> را بزنید و توکنی را که می‌دهد اینجا بگذارید و «ذخیره‌ی تنظیمات» را بزنید. ۲) به ربات تازه‌ی خودتان یک پیام بفرستید. ۳) «آزمایش» را بزنید.</div>
+ <input id="tgt" type="password" autocomplete="off" placeholder="${t.configured?'توکن تازه (خالی = بدون تغییر)':'توکن ربات تلگرام'}" style="font:inherit;width:100%;padding:10px 12px;margin-top:8px;border-radius:12px;border:1px solid var(--line);background:var(--card2);color:var(--text);direction:ltr">
+ <div class="row" style="margin-top:8px"><button class="btn w" onclick="tgTest()">آزمایش</button>${t.configured?'<button class="btn" onclick="tgOff()">قطع تلگرام</button>':''}</div><div id="tgm" class="note"></div>`}
+async function tgTest(){$('tgm').textContent='در حال فرستادن…';try{const r=await api('/api/telegram/test',{method:'POST'});$('tgm').textContent=r.message;if(r.ok){SET=await api('/api/settings');renderSet(SET);$('tgm').textContent=r.message}}catch(e){$('tgm').textContent='خطا: '+e.message}}
+async function tgOff(){if(!confirm('گزارش تلگرام قطع شود؟'))return;SET=await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({telegram_token:''})});renderSet(SET)}
 function chosen(){return [...document.querySelectorAll('input[data-s]')].filter(i=>i.checked).map(i=>i.dataset.s)}
 function riskInfo(){$('rv').textContent=Number($('risk').value).toFixed(2)+'٪';const r=pctNow(),c=capNow();
  $('mv').innerHTML=`${num(c*r/100)} دلار <span class="muted" style="font-size:13px">(${num(r)}٪ از ${num(c,0)} دلار)</span>`;
@@ -206,6 +215,7 @@ function stepPos(d){const e=$('pv');e.textContent=Math.min(6,Math.max(1,Number(e
 async function saveSet(){const st={};document.querySelectorAll('input[data-s]').forEach(i=>st[i.dataset.s]=i.checked);
  const body={risk_per_trade_pct:Number($('risk').value),max_daily_loss_pct:Number($('daily').value),max_open_positions:Number($('pv').textContent),max_leverage:Number($('lev').value),styles:st,
  capital_mode:$('cm').dataset.v,trade_risk_mode:$('tm').dataset.v};
+ if($('tgt')&&$('tgt').value.trim())body.telegram_token=$('tgt').value.trim();
  if(body.capital_mode=='manual')body.capital_usd=Number($('cap').value);if(body.trade_risk_mode=='manual')body.trade_risk_usd=Number($('amt').value);
  try{SET=await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});renderSet(SET);$('sm').textContent='ذخیره شد ✔'}catch(e){$('sm').textContent='ذخیره نشد: '+e.message}}
 async function post(a){try{await api('/api/'+a,{method:'POST'});refresh()}catch(e){}}
@@ -291,6 +301,8 @@ def make_handler(engine, cfg):
                     return self._json(engine.apply_settings(body))
             if path == "/api/update":
                 return self._json(engine.start_update())
+            if path == "/api/telegram/test":
+                return self._json(engine.telegram.test())  # network call: outside the engine lock
             if path == "/api/pause":
                 engine.paused = True
             elif path == "/api/resume":

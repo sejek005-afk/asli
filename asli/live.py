@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 
 from . import backtest as bt
+from . import notify
 from . import brain as brainlib
 from .broker import lot_size, round_volume
 from .config import ROOT, for_symbol
@@ -87,7 +88,9 @@ class Engine:
         self.expect = brainlib.Expectations.load(cfg["paths"]["reports"])
         self.update_state: dict = {"state": "idle", "log": []}
         self.settings: dict = {}
-        self.apply_settings(self._load("settings.json", {}), save=False)
+        saved = self._load("settings.json", {})
+        self.telegram = notify.Telegram(cfg, self.state_dir, saved)
+        self.apply_settings(saved, save=False)
         # look back to the oldest trade we still track (covers restarts after long downtime)
         opened = [datetime.fromisoformat(m["opened"]) for m in self.trade_meta.values() if m.get("opened")]
         self._deals_since = min(opened + [datetime.now(UTC)]) - timedelta(days=1)
@@ -257,6 +260,12 @@ class Engine:
         for k, allowed in MODE_KEYS.items():
             if s.get(k) in allowed:
                 cur[k] = s[k]
+        if isinstance(s.get("telegram_token"), str):
+            if self.telegram.set_token(s["telegram_token"]):
+                cur["telegram_token"] = self.telegram.token
+                self._tg_note = ""
+            else:
+                self._tg_note = "توکن تلگرام شکل درستی ندارد و ذخیره نشد (باید چیزی مثل 123456789:ABC... باشد)"
         styles = dict(cur.get("styles", {}))
         for name, on in (s.get("styles") or {}).items():
             if name in ALL_STYLES:
@@ -291,7 +300,8 @@ class Engine:
         self.settings = cur
         if save:
             self._save("settings.json", cur)
-            log.info("settings changed from the app: %s", {k: v for k, v in cur.items() if k != "learning_reset"})
+            log.info("settings changed from the app: %s",
+                     {k: v for k, v in cur.items() if k not in ("learning_reset", "telegram_token")})
         return self.settings_view()
 
     def settings_view(self) -> dict:
@@ -309,7 +319,8 @@ class Engine:
         return {"values": {**{k: r[k] for k in SETTING_BOUNDS}, **{k: r.get(k, "auto") for k in MODE_KEYS}},
                 "bounds": SETTING_BOUNDS, "styles": styles, "sizing": self.sizing_view(),
                 "preview": preview, "current_preview": self.expect.preview(float(r["risk_per_trade_pct"]), enabled, sw),
-                "leverage": self.leverage_view(), "updated_at": self.settings.get("updated_at")}
+                "leverage": self.leverage_view(), "updated_at": self.settings.get("updated_at"),
+                "telegram": {**self.telegram.view(), "note": getattr(self, "_tg_note", "")}}
 
     # ------------------------------------------------------------------ money: capital and amount per trade
     def capital(self, balance: float) -> float:
@@ -568,7 +579,27 @@ class Engine:
                 except Exception as exc:  # noqa: BLE001
                     log.exception("step %s failed: %s", symbol, exc)
             self._manage_positions()
+            self._nightly_report()
             self.status = "paused" if self.paused else "running"
+
+    def _nightly_report(self) -> None:
+        now = datetime.now(UTC)
+        if not self.telegram.report_due(now):
+            return
+        try:
+            self.telegram.send(notify.daily_text(self.journal, self.broker.positions(), self.switch,
+                                                 self.broker.account(), now))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("nightly report failed: %s", exc)
+        self.telegram.mark_report(now)
+
+    def _log_decision(self, decision: dict) -> None:
+        """Append-only record of every decision (approved or not) with its reasons: state/decisions_log.jsonl"""
+        try:
+            with open(self.state_dir / "decisions_log.jsonl", "a", encoding="utf-8") as f:
+                f.write(json.dumps(decision, ensure_ascii=False, default=str) + "\n")
+        except Exception:  # noqa: BLE001
+            pass
 
     def _symbol_step(self, symbol: str) -> None:
         if symbol not in self.metas:
@@ -680,12 +711,14 @@ class Engine:
                                                "valid_until": (now + timedelta(minutes=5 * sig.valid_bars)).isoformat()}
                     self._save("trade_meta.json", self.trade_meta)
                     log.info("OPEN %s %s %s vol=%s ticket=%s", sym, row["strategy"], row["direction"], vol, t)
+                    self.telegram.send(notify.open_text(sym, row, vol, risk_money))
                 except Exception as exc:  # noqa: BLE001
                     decision["approved"] = False
                     decision["debate"] += f"\nخطای ارسال سفارش: {exc}"
                     log.error("order failed: %s", exc)
         self.decisions.appendleft(decision)
         self._save("decisions.json", list(self.decisions))
+        self._log_decision(decision)
 
     # ------------------------------------------------------------------ management
     def _manage_positions(self) -> None:
@@ -762,6 +795,8 @@ class Engine:
             del self.trade_meta[tk]
             changed = True
             log.info("CLOSED %s %s profit=%.2f r=%.2f — learner updated", m["symbol"], m["strategy"], profit, r)
+            self.telegram.send(notify.close_text(self.journal[-1], sum(j["profit"] for j in self.journal),
+                                                 len(self.journal)))
         if changed:
             self.learner.save(self.state_dir / "learner.json")
             self._save("trade_meta.json", self.trade_meta)

@@ -99,6 +99,8 @@ class Fundamentals:
         self.cache = self.state / "calendar.json"  # ForexFactory raw feed
         self.cache_tv = self.state / "calendar_tv.json"  # TradingView raw feed
         self.events: list[dict] = []
+        words = [w for w in (self.cfg.get("irrelevant_events") or []) if w]
+        self._irrelevant = re.compile("|".join(f"(?:{w})" for w in words), re.I) if words else None
         self._ff: list[dict] = []
         self._tv: list[dict] = []
         self.ok_at: dict[str, float] = {}  # source -> unix time of the last successful fetch
@@ -220,13 +222,21 @@ class Fundamentals:
             cutoff = datetime.now(UTC) - timedelta(hours=48)
             self.headlines = [h for h in self.headlines if h["t"] > cutoff][-500:]
 
+    def relevant(self, e: dict) -> bool:
+        """High-impact events always count. Medium/low ones are dropped when their title is about something
+        that does not move currencies or gold (farm reports, energy stock data, debt auctions, rig counts...)."""
+        if e.get("impact") == "High":
+            return True
+        pat = self._irrelevant
+        return not (pat and pat.search(str(e.get("title", ""))))
+
     def blackout(self, symbol: str, t: datetime) -> dict | None:
         """The calendar event that currently blocks trading this symbol, if any."""
         curs = set(symbol_currencies(symbol))
         hi = timedelta(minutes=float(self.cfg.get("blackout_high_min", 30)))
         md = timedelta(minutes=float(self.cfg.get("blackout_medium_min", 10)))
         for e in self.events:
-            if e["cur"] not in curs:
+            if e["cur"] not in curs or not self.relevant(e):
                 continue
             win = hi if e["impact"] == "High" else (md if e["impact"] == "Medium" else None)
             if win is not None and e["t"] - win <= t <= e["t"] + win:
@@ -237,7 +247,7 @@ class Fundamentals:
         """0..1 score for high/medium impact events on this symbol's currencies in the next `hours`."""
         curs = set(symbol_currencies(symbol))
         soon = [e for e in self.events if e["cur"] in curs and t <= e["t"] <= t + timedelta(hours=hours)
-                and e["impact"] in ("High", "Medium")]
+                and e["impact"] in ("High", "Medium") and self.relevant(e)]
         score = 0.0
         for e in soon:
             mins = (e["t"] - t).total_seconds() / 60
